@@ -7,4 +7,8 @@ export const TESTBENCH_SCENARIOS = [
   "write-capability-routed-through-ananke",
   "memory-capability-routed-through-mnemosyne",
   "orchestration-event-emitted",
+  "runtime-lifecycle-transition-validated",
+  "task-owner-retained-during-degradation",
+  "runtime-cancellation-and-deregistration",
+  "failed-runtime-recovery",
 ];

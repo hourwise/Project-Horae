@@ -8,6 +8,25 @@ export type RuntimeHealthStatus =
   | "degraded"
   | "unavailable";
 
+export type RuntimeLifecycleState =
+  | "registered"
+  | "initialising"
+  | "ready"
+  | "busy"
+  | "waiting"
+  | "degraded"
+  | "cancelling"
+  | "terminated"
+  | "failed";
+
+export interface RuntimeLifecycle {
+  state: RuntimeLifecycleState;
+  changedAt: string;
+  taskId?: string;
+  cancellationRequestedAt?: string;
+  message?: string;
+}
+
 export type CapabilityCategory =
   | "approval"
   | "policy"
@@ -48,6 +67,7 @@ export interface RuntimeRegistration {
   id: string;
   identity: RuntimeIdentity;
   health: RuntimeHealth;
+  lifecycle?: RuntimeLifecycle;
   capabilities: RuntimeCapability[];
   endpoint?: string;
   tags?: string[];

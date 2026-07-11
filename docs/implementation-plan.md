@@ -45,27 +45,39 @@ Success criterion: the full flow is repeatable and no component bypasses Ananke,
 
 ## Phase 3 — Lifecycle, Failure, and Recovery
 
-- Add startup, shutdown, restart, readiness, and health-change coordination.
+Implementation began on 11 July 2026 with the typed runtime lifecycle state machine, transition validation, task ownership retention, cancellation/termination/recovery paths, and lifecycle testbench coverage.
+
+- Implement the runtime lifecycle state machine: `registered`, `initialising`, `ready`, `busy`, `waiting`, `degraded`, `cancelling`, `terminated`, and `failed`.
+- Add register, initialise, heartbeat, task claim, pause, resume, cancel, terminate, recover, deregister, restart, readiness, and health-change coordination.
+- Provision workers only for declared capabilities required by the active task, then give them the minimum context and authority needed.
+- Add cooperative cancellation, forced termination, typed partial-result collection, cleanup verification, task-state handoff, and orphan cleanup.
 - Implement risk-aware degraded-state tables rather than a global fail-open/fail-closed switch.
 - Preserve local state on remote failure and return typed partial outcomes with recovery instructions.
 - Use idempotency keys and completed-effect records so retries never repeat an external effect.
 - Deny governed writes when audit persistence is unavailable; allow only explicitly safe reduced compositions.
 
-Success criterion: recovery after a connector failure following a local commit produces `PARTIAL_SUCCESS` and can retry only the unfinished connector operation.
+Success criterion: recovery after a connector failure following a local commit produces `PARTIAL_SUCCESS` and can retry only the unfinished connector operation; cancellation returns a typed outcome and verifies cleanup without abandoning an owned task or worker.
 
-## Phase 4 — Model and Connector Integration
+## Phase 4 — Models, Connectors, Sandboxes, and Framework Adapters
 
 - Consume Model Broker profiles rather than provider-specific APIs.
-- Enforce model validation, locality, privacy, jurisdiction, structured-output, and permitted-fallback constraints at composition time.
+- Select models using declared and observed capability profiles, including context, tools, vision, structured output, reasoning controls, local execution, streaming audio, reliability, and known failure modes.
+- Enforce model validation, locality, privacy, jurisdiction, structured-output, and permitted-fallback constraints at composition time; long context must not substitute for qualified project memory.
 - Treat hosted invocation as a disclosure decision and keep secrets, prohibited data, and unapproved source code outside its context.
 - Admit typed connectors with broker-held credentials; ensure models never receive tokens.
+- Add sandbox-neutral execution targets for host, process, container, microVM, and remote-sandbox isolation. Horae selects a compatible target and Ananke authorises execution.
+- Import compatible Agent Skills manifests with source provenance, capabilities, secret/network requirements, supported runtimes/models, and `unreviewed`, `verified`, `restricted`, or `blocked` trust state.
+- Add governed framework adapters for identity, capabilities, lifecycle, cancellation, messaging, outcomes, audit correlation, memory handoff, and health.
+- Add speech capability profiles covering on-device, local-service, and cloud modes; streaming, duplex, locale, confidence, and interruption support.
 - Remove temporary external capabilities after completion.
 
-Success criterion: local-to-hosted fallback and endpoint impersonation are denied, while permitted fallback remains observable and policy-bound.
+Success criterion: local-to-hosted fallback and endpoint impersonation are denied; skills and framework adapters cannot gain authority through discovery; execution location is explicit; permitted fallback remains observable and policy-bound.
 
 ## Phase 5 — Moirae Code Experience
 
 Expose governed-session state for Moirae Code: selected model, governance profile, runtime health, enabled capabilities, local/remote boundary, context reliability and conflicts, pending approvals, degraded state, correlation trail, and aggregate outcome.
+
+Use **Moirae Code** as the IDE product name in all implementation artifacts and user-facing text.
 
 The IDE may request actions but must not turn human terminal access into agent authority.
 
@@ -93,3 +105,10 @@ The IDE may request actions but must not turn human terminal access into agent a
 - partial success and retry after a completed local effect;
 - local-to-remote fallback, endpoint impersonation, and invalid model declarations;
 - connector token non-exposure, direct-executor bypass, namespace collision, SQLite separation, and temporary grant removal.
+- worker cancellation during execution, forced termination and cleanup verification, orphan recovery, and task-state handoff;
+- skill registration without implicit authority, blocked skill admission, unsupported runtime/model combinations, and undeclared network or secret requirements;
+- explicit sandbox selection and Ananke denial, framework-adapter lifecycle conformance, provider-switch visibility, and speech-boundary enforcement.
+
+## Planning Inputs
+
+The [Project Horae Research and Requirements](PROJECT_HORAE_RESEARCH_AND_REQUIREMENTS.md) document is a normative planning input for Phases 3 and 4. Its schemas should be reconciled with `project-runtime-contracts` before implementation so shared result, lifecycle, execution-target, model, speech, skill, and adapter types remain framework-neutral.

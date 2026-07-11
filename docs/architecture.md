@@ -17,7 +17,7 @@ It does not implement provider APIs, action policy, approval decisions, memory r
 ## Composition Flow
 
 ```text
-Moirae Chat / Agent Host / IDE
+Moirae Code / Agent Host
               |
         task + profile + disclosure boundary
               |
