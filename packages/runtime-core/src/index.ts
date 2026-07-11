@@ -1,6 +1,6 @@
 export { InMemoryAuditRouter } from "@horae/audit-router";
 export { RuntimeLifecycleError, RuntimeRegistry } from "@horae/runtime-registry";
-export type { LifecycleTransitionOptions } from "@horae/runtime-registry";
+export type { LifecycleTransitionOptions, StaleHeartbeatOptions } from "@horae/runtime-registry";
 export { SessionOrchestrator } from "@horae/session-orchestrator";
 export type {
   HoraeCapabilityPlan,
@@ -8,6 +8,9 @@ export type {
   HoraeProfile,
   HoraeSession,
   HoraeSessionRequest,
+  RuntimeHealth,
+  RuntimeHealthAssessment,
+  RuntimeHeartbeat,
   RuntimeLifecycle,
   RuntimeLifecycleState,
   RuntimeRegistration,

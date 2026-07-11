@@ -247,7 +247,7 @@ See [Laws of Horae](docs/laws-of-horae.md) for the complete formal statement.
 
 ✅ **Phase 1 & 2 Complete** - All core registry, planning, and governed vertical slice functionality implemented and tested.
 
-🔄 **Phase 3 Underway** - The typed runtime lifecycle state machine, task ownership, cancellation, termination, recovery, and lifecycle tests are implemented. Health supervision, partial outcomes, and idempotent recovery remain next.
+🔄 **Phase 3 Underway** - The typed runtime lifecycle state machine, task ownership, cancellation, termination, recovery, and heartbeat supervision are implemented. Partial outcomes and idempotent recovery remain next.
 
 The TypeScript workspace is production-ready for Phase 3 development. Core competencies proven:
 - Identity verification prevents impersonation

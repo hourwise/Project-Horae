@@ -11,4 +11,7 @@ export const TESTBENCH_SCENARIOS = [
   "task-owner-retained-during-degradation",
   "runtime-cancellation-and-deregistration",
   "failed-runtime-recovery",
+  "heartbeat-freshness-assessment",
+  "stale-heartbeat-degradation",
+  "out-of-order-heartbeat-rejected",
 ];

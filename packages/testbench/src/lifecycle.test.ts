@@ -113,6 +113,65 @@ describe("runtime lifecycle", () => {
     expect(cancelling.taskId).toBe("task-123");
   });
 
+  it("degrades an active worker when its heartbeat becomes stale", () => {
+    const registry = new RuntimeRegistry();
+    registry.register(runtime());
+    registry.transitionLifecycle("worker-local", "initialising");
+    registry.transitionLifecycle("worker-local", "ready");
+    registry.transitionLifecycle("worker-local", "busy", { taskId: "task-123" });
+
+    const [assessment] = registry.markStaleRuntimes({
+      maxAgeMs: 30_000,
+      now: "2026-07-11T12:01:00.000Z",
+    });
+
+    expect(assessment).toMatchObject({
+      runtimeId: "worker-local",
+      isStale: true,
+      ageMs: 60_000,
+      health: { status: "degraded", checkedAt: "2026-07-11T12:00:00.000Z" },
+    });
+    expect(registry.get("worker-local")?.lifecycle).toMatchObject({
+      state: "degraded",
+      taskId: "task-123",
+    });
+  });
+
+  it("assesses heartbeat freshness without changing runtime state", () => {
+    const registry = new RuntimeRegistry();
+    registry.register(runtime());
+
+    expect(registry.assessHealth(30_000, "2026-07-11T12:00:10.000Z")).toMatchObject([
+      { runtimeId: "worker-local", isStale: false, ageMs: 10_000 },
+    ]);
+    expect(registry.assessHealth(30_000, "2026-07-11T12:01:00.000Z")).toMatchObject([
+      { runtimeId: "worker-local", isStale: true, ageMs: 60_000 },
+    ]);
+    expect(registry.get("worker-local")?.health.status).toBe("healthy");
+  });
+
+  it("rejects out-of-order heartbeats and requires explicit lifecycle recovery", () => {
+    const registry = new RuntimeRegistry();
+    registry.register(runtime());
+    registry.transitionLifecycle("worker-local", "initialising");
+    registry.transitionLifecycle("worker-local", "ready");
+    registry.transitionLifecycle("worker-local", "degraded");
+
+    registry.recordHeartbeat("worker-local", {
+      status: "healthy",
+      checkedAt: "2026-07-11T12:01:00.000Z",
+    });
+
+    expect(registry.get("worker-local")?.health.status).toBe("healthy");
+    expect(registry.get("worker-local")?.lifecycle?.state).toBe("degraded");
+    expect(() =>
+      registry.recordHeartbeat("worker-local", {
+        status: "healthy",
+        checkedAt: "2026-07-11T11:59:59.000Z",
+      }),
+    ).toThrow("out-of-order heartbeat");
+  });
+
   it("rejects duplicate and unknown registrations", () => {
     const registry = new RuntimeRegistry();
     registry.register(runtime());

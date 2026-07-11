@@ -1,5 +1,8 @@
 import type {
   RuntimeCapability,
+  RuntimeHealth,
+  RuntimeHealthAssessment,
+  RuntimeHeartbeat,
   RuntimeLifecycle,
   RuntimeLifecycleState,
   RuntimeRegistration,
@@ -21,6 +24,11 @@ export interface LifecycleTransitionOptions {
   at?: string;
   taskId?: string;
   message?: string;
+}
+
+export interface StaleHeartbeatOptions {
+  maxAgeMs: number;
+  now?: string;
 }
 
 export class RuntimeLifecycleError extends Error {
@@ -83,6 +91,89 @@ export class RuntimeRegistry {
     return lifecycle;
   }
 
+  recordHeartbeat(id: string, heartbeat: RuntimeHeartbeat): RuntimeHealth {
+    const registration = this.requireRegistration(id);
+    const checkedAt = this.requireTimestamp(heartbeat.checkedAt, "heartbeat checkedAt");
+    const previousCheckedAt = this.requireTimestamp(
+      registration.health.checkedAt,
+      "registered health checkedAt",
+    );
+
+    if (checkedAt < previousCheckedAt) {
+      throw new RuntimeLifecycleError(
+        `Runtime '${id}' received an out-of-order heartbeat from '${heartbeat.checkedAt}'`,
+      );
+    }
+
+    registration.health = {
+      status: heartbeat.status,
+      checkedAt: heartbeat.checkedAt,
+      ...(heartbeat.message ? { message: heartbeat.message } : {}),
+    };
+
+    if (heartbeat.status === "degraded" || heartbeat.status === "unavailable") {
+      this.degradeActiveRuntime(registration, heartbeat.checkedAt, heartbeat.message);
+    }
+
+    return registration.health;
+  }
+
+  assessHealth(maxAgeMs: number, now = new Date().toISOString()): RuntimeHealthAssessment[] {
+    this.requireMaxAge(maxAgeMs);
+    const nowMs = this.requireTimestamp(now, "health assessment time");
+
+    return this.list().map((registration) => {
+      const checkedAtMs = this.requireTimestamp(
+        registration.health.checkedAt,
+        `runtime '${registration.id}' health checkedAt`,
+      );
+      const ageMs = Math.max(0, nowMs - checkedAtMs);
+
+      return {
+        runtimeId: registration.id,
+        health: registration.health,
+        isStale: ageMs > maxAgeMs,
+        ageMs,
+      };
+    });
+  }
+
+  markStaleRuntimes(options: StaleHeartbeatOptions): RuntimeHealthAssessment[] {
+    this.requireMaxAge(options.maxAgeMs);
+
+    const now = options.now ?? new Date().toISOString();
+    const nowMs = this.requireTimestamp(now, "stale-heartbeat sweep time");
+    const assessments: RuntimeHealthAssessment[] = [];
+
+    for (const registration of this.list()) {
+      const checkedAtMs = this.requireTimestamp(
+        registration.health.checkedAt,
+        `runtime '${registration.id}' health checkedAt`,
+      );
+      const ageMs = Math.max(0, nowMs - checkedAtMs);
+      const isStale = ageMs > options.maxAgeMs;
+
+      if (isStale && registration.health.status !== "unavailable") {
+        const message = `Heartbeat exceeded the ${options.maxAgeMs}ms freshness limit`;
+        registration.health = {
+          status: "degraded",
+          checkedAt: registration.health.checkedAt,
+          message,
+        };
+        this.degradeActiveRuntime(registration, now, message);
+      }
+
+      assessments.push({
+        runtimeId: registration.id,
+        health: registration.health,
+        isStale,
+        ageMs,
+      });
+    }
+
+    return assessments;
+  }
+
   deregister(id: string): RuntimeRegistration {
     const registration = this.requireRegistration(id);
     const state = registration.lifecycle!.state;
@@ -139,5 +230,30 @@ export class RuntimeRegistry {
     }
 
     return undefined;
+  }
+
+  private degradeActiveRuntime(
+    registration: RuntimeRegistration,
+    at: string,
+    message?: string,
+  ): void {
+    const state = registration.lifecycle!.state;
+    if (state === "ready" || state === "busy" || state === "waiting") {
+      this.transitionLifecycle(registration.id, "degraded", { at, message });
+    }
+  }
+
+  private requireTimestamp(value: string, label: string): number {
+    const timestamp = Date.parse(value);
+    if (Number.isNaN(timestamp)) {
+      throw new RuntimeLifecycleError(`${label} must be an ISO-8601 timestamp`);
+    }
+    return timestamp;
+  }
+
+  private requireMaxAge(maxAgeMs: number): void {
+    if (!Number.isFinite(maxAgeMs) || maxAgeMs < 0) {
+      throw new RuntimeLifecycleError("maxAgeMs must be a non-negative finite number");
+    }
   }
 }

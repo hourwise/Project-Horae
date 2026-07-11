@@ -47,6 +47,7 @@
 - Added explicit runtime lifecycle contracts and validated state transitions
 - Added task ownership across busy, waiting, degraded, cancelling, and failed states
 - Added guarded cancellation, termination, recovery, and deregistration behavior
+- Added ordered heartbeat recording, freshness assessment, and stale-runtime degradation
 - Added lifecycle testbench coverage and repaired deterministic project-reference builds
 
 **Planned Deliverables:**

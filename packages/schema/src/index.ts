@@ -51,6 +51,19 @@ export interface RuntimeHealth {
   message?: string;
 }
 
+export interface RuntimeHeartbeat {
+  status: RuntimeHealthStatus;
+  checkedAt: string;
+  message?: string;
+}
+
+export interface RuntimeHealthAssessment {
+  runtimeId: string;
+  health: RuntimeHealth;
+  isStale: boolean;
+  ageMs: number;
+}
+
 export interface RuntimeCapability {
   id: string;
   runtimeId: string;

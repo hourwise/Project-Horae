@@ -45,7 +45,7 @@ Success criterion: the full flow is repeatable and no component bypasses Ananke,
 
 ## Phase 3 — Lifecycle, Failure, and Recovery
 
-Implementation began on 11 July 2026 with the typed runtime lifecycle state machine, transition validation, task ownership retention, cancellation/termination/recovery paths, and lifecycle testbench coverage.
+Implementation began on 11 July 2026 with the typed runtime lifecycle state machine, transition validation, task ownership retention, cancellation/termination/recovery paths, lifecycle testbench coverage, and heartbeat supervision. Heartbeats are ordered, stale active runtimes are degraded while retaining task ownership, and lifecycle recovery remains explicit.
 
 - Implement the runtime lifecycle state machine: `registered`, `initialising`, `ready`, `busy`, `waiting`, `degraded`, `cancelling`, `terminated`, and `failed`.
 - Add register, initialise, heartbeat, task claim, pause, resume, cancel, terminate, recover, deregister, restart, readiness, and health-change coordination.
