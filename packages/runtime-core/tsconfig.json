@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "composite": true
+  },
+  "references": [
+    { "path": "../schema" },
+    { "path": "../runtime-registry" },
+    { "path": "../session-orchestrator" },
+    { "path": "../audit-router" }
+  ],
+  "include": ["src/**/*.ts"]
+}

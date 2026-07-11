@@ -1,0 +1,16 @@
+{
+  "name": "@horae/runtime-core",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@horae/audit-router": "0.1.0",
+    "@horae/runtime-registry": "0.1.0",
+    "@horae/schema": "0.1.0",
+    "@horae/session-orchestrator": "0.1.0"
+  }
+}

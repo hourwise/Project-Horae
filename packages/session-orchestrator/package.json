@@ -1,0 +1,15 @@
+{
+  "name": "@horae/session-orchestrator",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@horae/capability-planner": "0.1.0",
+    "@horae/runtime-registry": "0.1.0",
+    "@horae/schema": "0.1.0"
+  }
+}

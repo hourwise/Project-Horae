@@ -1,0 +1,17 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/schema" },
+    { "path": "packages/runtime-registry" },
+    { "path": "packages/capability-planner" },
+    { "path": "packages/session-orchestrator" },
+    { "path": "packages/profile-loader" },
+    { "path": "packages/ananke-binding" },
+    { "path": "packages/mnemosyne-binding" },
+    { "path": "packages/gateway-adapter" },
+    { "path": "packages/audit-router" },
+    { "path": "packages/runtime-core" },
+    { "path": "packages/cli" },
+    { "path": "packages/testbench" }
+  ]
+}

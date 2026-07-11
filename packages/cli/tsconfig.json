@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "composite": true
+  },
+  "references": [{ "path": "../runtime-core" }],
+  "include": ["src/**/*.ts"]
+}
