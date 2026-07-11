@@ -1,0 +1,473 @@
+Core role
+
+Horae should be the composition and supervision runtime for the ecosystem.
+
+It should answer:
+
+Which runtimes are available?
+Are they compatible?
+What capabilities does this task require?
+Which model and connectors may participate?
+What governance profile applies?
+What happens when a runtime is unavailable or degraded?
+How are all events correlated into one trace?
+
+Horae should not become a general workflow engine, model provider, policy engine or memory engine.
+
+Required responsibilities
+Runtime discovery and compatibility
+
+Horae must:
+
+discover Ananke, Mnemosyne and future runtimes;
+verify runtime identity;
+negotiate protocol versions;
+reject incompatible runtime combinations before task execution;
+read capability manifests;
+detect duplicate or conflicting capability providers;
+monitor runtime health and readiness;
+support runtime startup, shutdown and restart handling.
+
+Compatibility must be enforced, not merely documented.
+
+Least-capability task composition
+
+Each task should receive only the capabilities it actually requires.
+
+For example:
+
+task:
+  capabilities:
+    - workspace.read
+    - workspace.write
+    - test.run
+    - git.local
+
+GitHub access, external messaging, deployment or remote-model use should not automatically exist in every session.
+
+Horae must:
+
+construct task-scoped runtime compositions;
+grant the narrowest available capability set;
+remove temporary capabilities after use;
+prevent one runtime from silently expanding another runtime’s authority;
+prevent fallback behaviour from weakening governance or privacy boundaries.
+
+A suitable ecosystem rule is:
+
+Coordination may reduce capability, but must never silently expand it.
+
+Separation of authority
+
+Horae must preserve the boundaries between the runtimes.
+
+Ananke owns
+action policy;
+approval requirements;
+approval binding;
+tool execution governance;
+action outcomes;
+action audit records.
+Mnemosyne owns
+memory ingestion;
+provenance;
+reliability scoring;
+conflict detection;
+decay and freshness;
+context-pack generation;
+decisions about which memories are eligible, qualified or withheld.
+Horae owns
+task composition;
+routing;
+lifecycle;
+health supervision;
+correlation;
+capability negotiation;
+degraded-state coordination;
+aggregate task outcome.
+
+Horae must never:
+
+manufacture an approval;
+bypass Ananke to invoke an executor;
+alter Mnemosyne reliability scores;
+silently choose which conflicting memory is true;
+treat runtime identity as proof that runtime output is trustworthy;
+become a second source of truth for Ananke or Mnemosyne audit data.
+Cross-runtime authority law
+
+The ecosystem should formally adopt:
+
+No runtime may increase another runtime’s authority.
+
+Consequences:
+
+Mnemosyne may warn Ananke, but cannot grant permission.
+Horae may request an approval, but cannot approve.
+A model provider cannot grant tool access.
+A connector cannot expand its own repository or API permissions.
+A UI interaction is not authority until Ananke validates the bound payload.
+Runtime Contracts describes authority-related shapes but implements no authority decisions.
+Model integration
+
+Horae should not implement provider-specific APIs directly. That belongs in a separate Model Broker.
+
+The Model Broker answers:
+
+How do we communicate with this model?
+
+Horae answers:
+
+May this model participate in this task, and under what constraints?
+
+Horae must consume a normalised model profile containing:
+
+provider identity;
+local or remote boundary;
+model identity;
+validated capabilities;
+context limits;
+structured-output support;
+tool-call reliability;
+validation status;
+model digest where available;
+privacy and data-boundary properties;
+permitted fallback models.
+
+Horae should reject a model when required capabilities are unvalidated or absent.
+
+Model substitution and fallback
+
+Fallback must be explicit and policy-bound.
+
+Horae must never silently:
+
+replace a local model with a hosted model;
+change provider jurisdiction;
+send source code to a remote service;
+move from an approved endpoint to an unknown endpoint;
+switch to a model with weaker governance restrictions;
+select a model merely because it is cheaper or faster.
+
+A fallback should be allowed only when it preserves or strengthens:
+
+data locality;
+privacy;
+permissions;
+governance profile;
+validated capabilities.
+Local and hosted model conditions
+
+Horae must treat locality as a data boundary, not as an authority guarantee.
+
+A local model still requires governance because it can:
+
+delete or corrupt files;
+issue malformed tool calls;
+hallucinate tool results;
+ignore instructions;
+abuse shell access;
+create unreliable memories;
+consume excessive resources.
+
+Horae should support profiles such as:
+
+fully offline;
+local model with local storage;
+local model with temporary GitHub access;
+hosted model with restricted source-code access;
+enterprise-managed model endpoint;
+mixed local/remote composition.
+
+An offline profile should make remote connectors and hosted providers unavailable at the composition level.
+
+Connector integration
+
+GitHub and other external systems should appear to Horae as typed capability providers.
+
+Horae should not:
+
+hold raw tokens;
+authenticate directly to GitHub;
+expose credentials to the model;
+allow arbitrary CLI access as a substitute for typed connectors.
+
+It should compose capabilities such as:
+
+github.issues.read
+github.contents.read
+github.branch.push
+github.pull_request.create
+
+Credential custody belongs to a Credential Broker or connector-specific secure component.
+
+External capabilities should be added only when required and removed when no longer needed.
+
+Local Git and workspace integration
+
+Horae must distinguish:
+
+local workspace operations;
+local Git operations;
+remote GitHub operations.
+
+For example:
+
+workspace.write
+git.commit
+github.branch.push
+github.pull_request.create
+
+These are separate capabilities with separate risk and approval rules.
+
+Horae should not allow agents to bypass typed adapters through unrestricted shell access.
+
+Data disclosure as an action
+
+Sending context to a hosted model must be treated as a governed external disclosure.
+
+Horae should establish the requested data boundary before model invocation:
+
+workspace:
+  sourceCode: local_only
+  secrets: prohibited
+  personalData: prohibited
+
+model:
+  boundary: remote
+
+If those constraints conflict, the composition should fail before data is sent.
+
+Horae must know whether a task may expose:
+
+source code;
+repository history;
+customer information;
+personal data;
+secrets;
+Mnemosyne context;
+tool results.
+Failure behaviour
+
+Horae needs explicit degraded and failure semantics.
+
+It should not use one global fail-open/fail-closed switch. Behaviour should depend on:
+
+action risk;
+runtime involved;
+active governance profile;
+required capability;
+whether a safe reduced composition exists.
+
+Examples:
+
+Failure	Likely behaviour
+Mnemosyne unavailable during source search	Continue with degraded-context warning
+Mnemosyne unavailable before production deployment	Deny or require elevated approval
+Ananke unavailable for a write	Deny
+Model Broker unavailable	Return recoverable failure
+GitHub unavailable after local commit	Preserve local state and return partial success
+Audit persistence unavailable	Deny governed writes
+Optional telemetry unavailable	Continue
+
+Horae must never convert runtime failure into an authority bypass.
+
+Typed aggregate outcomes
+
+Horae should return a task-level outcome while preserving runtime-specific outcomes.
+
+For example:
+
+{
+  "taskState": "PARTIAL_SUCCESS",
+  "completed": [
+    "files_modified",
+    "tests_passed",
+    "branch_committed"
+  ],
+  "failed": [
+    "github_pull_request_created"
+  ],
+  "recovery": [
+    "retry_pull_request_creation"
+  ]
+}
+
+It must support:
+
+completed;
+failed;
+denied;
+waiting for approval;
+approval invalidated;
+timed out;
+degraded;
+partial success;
+recoverable retry.
+
+Retry logic must be idempotent and must not repeat already completed external effects.
+
+Correlation and audit
+
+Every task should receive shared identifiers such as:
+
+ecosystemSessionId
+taskId
+runtimeSessionId
+actionId
+contextPackId
+approvalId
+connectorOperationId
+modelInvocationId
+
+Horae must ensure that events from Ananke, Mnemosyne, the Model Broker and connectors can be correlated without merging their databases or ownership.
+
+Horae may maintain a task timeline, but it should reference runtime-owned audit records rather than rewrite them as its own truth.
+
+Storage conditions
+
+Each runtime should use separate storage and separate SQLite files.
+
+Horae should not create shared writable databases across runtimes.
+
+A future layout could be:
+
+.project-moirae/
+  ananke/
+  mnemosyne/
+  horae/
+  model-profiles/
+  connectors/
+  validation-reports/
+
+Secrets must remain outside project storage in the operating-system credential store.
+
+Security of runtime communication
+
+Cross-runtime messages should not be treated as trusted merely because they are local.
+
+Horae needs:
+
+authenticated runtime identity;
+protocol-version verification;
+message schema validation;
+session binding;
+replay protection;
+timestamp or sequence handling;
+duplicate event handling;
+stale-event rejection;
+auditability of dropped or rejected messages;
+protection against runtime impersonation.
+
+A forged Mnemosyne warning may cause denial of service. A suppressed warning may reduce safety. Both should be detectable.
+
+Moirae Code integration
+
+Horae should power the official governed agent experience inside Moirae Code.
+
+The likely flow is:
+
+Moirae Chat
+   |
+Moirae Agent Host
+   |
+Horae
+   +-- Model Broker
+   +-- Mnemosyne
+   +-- Ananke
+   +-- typed connectors
+
+Horae should expose enough state for the UI to display:
+
+selected model;
+active governance profile;
+runtime health;
+enabled capabilities;
+local or remote data boundary;
+context reliability;
+unresolved conflicts;
+pending approvals;
+degraded state;
+audit correlation;
+current task outcome.
+
+The IDE must keep human authority separate from agent authority. A human terminal should not imply that the agent inherits unrestricted terminal or credential access.
+
+Extension conditions
+
+Third-party providers or extensions should not automatically join the governed composition.
+
+Horae should distinguish:
+
+official Moirae-native components;
+governance-compatible components;
+unmanaged extensions.
+
+Only components implementing the required contracts, identity checks and capability restrictions should be admitted to a governed session.
+
+Provider extensions should supply model transport, not their own unrestricted tools, credentials or authority path.
+
+Validation requirements before broader development
+
+Before Horae becomes feature-rich, it should prove one thin end-to-end vertical slice:
+
+Discover Ananke and Mnemosyne.
+Verify compatible protocol versions.
+Start a correlated session.
+Retrieve a qualified context pack.
+Include a low-reliability or conflicting memory.
+Propose a governed workspace write.
+Route the context safety signal to Ananke.
+Receive the appropriate policy outcome.
+Approve the exact payload.
+Mutate it and confirm approval invalidation.
+Execute the approved version.
+Correlate both runtime audit records.
+Stop Mnemosyne.
+Verify the configured degraded or fail-closed behaviour.
+Export a combined JSON and CSV validation report.
+Essential Horae test scenarios
+
+The initial testbench should cover:
+
+incompatible protocol versions;
+forged runtime identity;
+duplicate capability providers;
+missing required capability;
+duplicate events;
+stale events;
+replayed approvals;
+runtime restart during a task;
+dropped Mnemosyne warning;
+Ananke unavailable during a write;
+Mnemosyne unavailable during high-risk action;
+connector success followed by later step failure;
+retry after partial success;
+model fallback crossing local-to-remote boundary;
+local endpoint impersonation;
+model capability declaration differing from validated capability;
+GitHub token never exposed to model;
+Horae attempting to call an executor directly;
+context-pack changes after approval;
+namespace collision;
+SQLite separation;
+audit correlation after runtime restart;
+temporary capability removal after task completion.
+Suggested new Laws of Horae
+
+These requirements could be condensed into additional laws:
+
+Horae coordinates authority; it does not create it.
+Every composition must use the least capability required.
+No runtime may increase another runtime’s authority.
+Runtime identity does not imply runtime truth.
+Failure must never become a bypass.
+Fallback must not weaken privacy, capability or governance.
+Every cross-runtime effect must be typed, attributable and correlatable.
+Completed external effects must not be repeated during recovery.
+Model locality changes disclosure risk, not action authority.
+Credentials belong to brokers and connectors, never to models.
+Data leaving a boundary is itself a governed action.
+Horae may aggregate outcomes, but runtime-owned records remain authoritative.
+
+The main development condition is therefore clear: Horae must remain a thin, least-authority coordinator. Its value comes from correctly composing independent trustworthy components, not from absorbing their responsibilities into another monolithic agent runtime.

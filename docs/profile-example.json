@@ -1,0 +1,29 @@
+{
+  "id": "personal-development",
+  "displayName": "Personal Development",
+  "description": "Local development with Ananke-governed writes, qualified Mnemosyne context, and no unapproved external disclosure.",
+  "projectId": "project-horae",
+  "governanceProfile": "development",
+  "requiredRuntimeCapabilities": ["policy", "approval", "qualified-context", "audit"],
+  "capabilityExposure": "task-scoped",
+  "dataBoundary": {
+    "sourceCode": "local_only",
+    "repositoryHistory": "local_only",
+    "secrets": "prohibited",
+    "personalData": "prohibited",
+    "mnemosyneContext": "local_only"
+  },
+  "model": {
+    "allowedBoundaries": ["local"],
+    "requireValidatedCapabilities": true,
+    "permittedFallbackModels": []
+  },
+  "capabilities": ["workspace.read", "workspace.write", "test.run", "git.local"],
+  "connectors": {
+    "github": "unavailable"
+  },
+  "audit": {
+    "requiredForGovernedWrites": true,
+    "destination": "local-jsonl"
+  }
+}
