@@ -1,67 +1,66 @@
 # Architecture
 
-## Role and Boundaries
+This document gives the high-level repository architecture and points to the more detailed companion documents.
 
-Horae is a thin composition and supervision runtime. It discovers runtimes, verifies identity and protocol compatibility, plans the least-capability task composition, supervises lifecycle and health, coordinates degraded states, and correlates task-level outcomes.
+## Overview
 
-It does not implement provider APIs, action policy, approval decisions, memory reliability, credential custody, or a shared audit database.
+Horae is a composition and supervision runtime for governed runtimes in the Moirae ecosystem.
 
-| Component | Owns | Horae must not |
-| --- | --- | --- |
-| Ananke | action policy, approval binding, governed tool execution, action outcomes, action audit | approve, bypass, or rewrite its audit truth |
-| Mnemosyne | memory provenance, reliability, conflicts, freshness, qualified context packs | alter reliability or choose a conflicting memory as true |
-| Model Broker | provider-specific model transport and normalised model profiles | call provider APIs directly |
-| Connector / Credential Broker | typed external operations and credentials | hold raw tokens or expose them to models |
-| Horae | composition, routing, lifecycle, health, correlation, degraded coordination, aggregate outcome | increase another component's authority |
+In the current repository, Horae publicly models:
 
-## Composition Flow
+- runtime identity and health records;
+- runtime lifecycle state and task ownership;
+- capability registration and filtering;
+- session scaffolding;
+- in-memory event correlation.
+
+Broader governance, execution, model, connector, and recovery behavior is still design-stage unless a package and test in this repository proves otherwise.
+
+## Ownership Boundary
+
+| Component                      | Owns                                                                                                                                                     | Horae does not own                                                   |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Horae                          | discovery, capability matching, composition planning, lifecycle supervision where implemented, health aggregation, correlation, degradation coordination | approval creation, memory truth, provider transport, raw credentials |
+| Ananke                         | policy, approval, governed execution, action outcomes, runtime-owned action audit                                                                        | composition planning                                                 |
+| Mnemosyne                      | memory provenance, reliability, conflicts, freshness, qualified context                                                                                  | policy or truth assignment by Horae                                  |
+| Model Broker                   | provider-specific transport and model profile normalisation                                                                                              | task composition                                                     |
+| Connector or credential broker | external operations and credential custody                                                                                                               | model-visible credentials                                            |
+
+See [architecture/ownership-matrix.md](architecture/ownership-matrix.md) for the detailed matrix.
+
+## Current Package Shape
 
 ```text
-Moirae Code / Agent Host
-              |
-        task + profile + disclosure boundary
-              |
-              v
-            Horae
-  +-----------+-----------+-------------+
-  | discover and verify   | plan least  |
-  | identity, protocol,   | capabilities|
-  | capability, health    | and routes  |
-  +-----------+-----------+-------------+
-              |
-  +-----------+-----------+-------------+
-  |                       |             |
-Model Broker           Mnemosyne      Ananke
-  |                       |             |
-model profile       context pack   governed typed effects
-                                      |
-                                   connectors
+Moirae Code or another host
+            |
+          Horae
+   +--------+--------+--------+
+   |                 |        |
+registry         planner   session scaffold
+   |                 |        |
+ runtime         capability   correlation
+ records          selection    and events
 ```
 
-Before execution, Horae rejects incompatible runtimes, duplicate or conflicting capability providers, missing validated model capabilities, and any plan whose required disclosure conflicts with the active data boundary.
+This package shape is implemented today through:
 
-## Session and Capability Plan
+- [`packages/runtime-registry`](../packages/runtime-registry)
+- [`packages/capability-planner`](../packages/capability-planner)
+- [`packages/session-orchestrator`](../packages/session-orchestrator)
+- [`packages/runtime-core`](../packages/runtime-core)
+- [`packages/audit-router`](../packages/audit-router)
 
-A session binds project identity, task, governance profile, requested disclosure boundary, selected model profile, qualified context-pack reference, runtime bindings, capability grants, and correlation identifiers.
+## Companion Documents
 
-Capabilities are granular and task-scoped. For example, `workspace.write`, `git.commit`, `github.branch.push`, and `github.pull_request.create` are separate capabilities with separate risk and approval rules. Installed or healthy does not mean exposed. Temporary grants are removed at completion.
+- [Laws of Horae](laws-of-horae.md)
+- [Composition Model](composition-model.md)
+- [Supervision State Machine](supervision-state-machine.md)
+- [Degradation and Recovery](degradation-and-recovery.md)
+- [Correlation Model](correlation-model.md)
+- [Runtime Integration](runtime-integration.md)
+- [Implementation Plan](implementation-plan.md)
+- [Roadmap](roadmap.md)
 
-Fallback is an explicit, policy-bound plan. It may only preserve or strengthen privacy, locality, governance, permissions, and validated capabilities. Horae must never silently switch a local model to hosted, send source code across a prohibited boundary, change jurisdiction, or select a weaker provider for cost or speed.
+## Documentation Conflict
 
-## Security and Runtime Contracts
-
-Runtime identity is not runtime truth. Cross-runtime communication must provide authenticated identity, protocol negotiation, schema validation, session binding, replay protection, sequence or timestamp handling, duplicate and stale-event handling, and auditable rejected messages.
-
-Shared contracts describe message shapes, not authority decisions. Every effect is typed and correlated using identifiers such as `ecosystemSessionId`, `taskId`, `runtimeSessionId`, `actionId`, `contextPackId`, `approvalId`, `connectorOperationId`, and `modelInvocationId`.
-
-Each runtime stores its data separately. Horae can maintain a task timeline that references authoritative runtime records, but it must not create shared writable databases or become a second source of truth.
-
-## Failure and Outcomes
-
-Failure behaviour is selected per capability, risk, runtime, and governance profile. Examples: an unavailable Ananke denies a write; unavailable Mnemosyne can permit a low-risk search with a degraded-context warning but blocks or escalates a production deployment; unavailable audit persistence denies governed writes; a GitHub failure after a local commit produces partial success without losing local state.
-
-The aggregate outcome preserves runtime-specific outcomes and reports `COMPLETED`, `FAILED`, `DENIED`, `WAITING_FOR_APPROVAL`, `APPROVAL_INVALIDATED`, `TIMED_OUT`, `DEGRADED`, `PARTIAL_SUCCESS`, or `RECOVERABLE_RETRY`. Recovery is idempotent and must not repeat completed external effects.
-
-## Extension Admission
-
-Horae distinguishes Moirae-native components, governance-compatible components, and unmanaged extensions. Only components implementing required contracts, identity checks, and capability restrictions can join a governed session. Provider extensions supply transport; they do not bring their own unrestricted tools, credentials, or authority path.
+- Older repository prose previously described broader implemented orchestration than the current public code supports. This architecture summary follows public types, source code, and tests first.

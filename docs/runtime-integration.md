@@ -1,51 +1,60 @@
 # Runtime Integration
 
-## Shared Contracts and Admission
+This document describes the repository's current runtime integration surface and the boundaries planned around it.
 
-`project-runtime-contracts` is the protocol source for cross-runtime message shapes. Horae-local planning types live in `@horae/schema`. Neither layer makes approval, policy, memory-trust, provider, or credential decisions.
+## Current Public Integration Surface
 
-Before a runtime joins a governed session, Horae verifies authenticated identity, supported protocol version, message schema, capabilities, health/readiness, and duplicate or conflicting providers. Local transport alone is not a trust boundary.
+Implemented and tested:
 
-Every cross-runtime envelope needs session binding, correlation IDs, timestamp or sequence handling, replay protection, idempotency handling, and an auditable rejection path for stale, duplicate, malformed, or impersonated messages.
+- runtimes register through `RuntimeRegistry` with `RuntimeRegistration`;
+- registrations carry `RuntimeIdentity`, `RuntimeHealth`, optional `RuntimeLifecycle`, and declared capabilities;
+- session scaffolding reads those registrations to build a `HoraeCapabilityPlan` and `HoraeSession`.
 
-## Runtime Capability Manifest
+Implemented but scaffold-level:
 
-Each runtime declares a stable identity, version, supported protocols, health, and capabilities. Capabilities include a stable ID, owner, risk/sensitivity, route type, required profile tags, disclosure boundary, validation status, and whether they require Ananke governance or Mnemosyne context.
+- `AnankeBinding`, `MnemosyneBinding`, and `GatewayAdapter` each expose only `inspect(): Promise<RuntimeRegistration>`.
 
-Horae rejects incompatible combinations before task execution. It does not use a runtime's identity as evidence that every output from that runtime is trustworthy.
+## What a Runtime Must Currently Provide
 
-## Ananke Boundary
+To participate in the public code that exists today, a runtime registration must provide:
 
-Horae asks Ananke for identity, protocol support, health, policy profiles, approval and execution routes, typed outcomes, and audit-record references. All execution-sensitive effects must use Ananke's exclusive governed routes.
+- a stable registration `id`;
+- a `RuntimeIdentity` with `runtime`, `version`, and `protocolVersion`;
+- a `RuntimeHealth` record with `status` and `checkedAt`;
+- a capability list.
 
-Horae may request an approval but cannot approve, bind, reinterpret, or bypass it. It must preserve approval invalidation when the approved payload or relevant context changes.
+## Current Enforcement
 
-## Mnemosyne Boundary
+Implemented and tested:
 
-Horae asks Mnemosyne for identity, protocol support, health, available scopes, qualified context packs, citations, provenance, and reliability/conflict signals.
+- duplicate registration IDs are rejected;
+- unsupported lifecycle transitions are rejected;
+- busy state requires task ownership;
+- out-of-order heartbeats are rejected;
+- stale active runtimes are degraded.
 
-Horae carries those signals into composition and governance decisions but never changes reliability, resolves conflicts as truth, or turns its own timeline into Mnemosyne's memory record.
+Not yet enforced in current public code:
 
-## Model Broker Boundary
+- protocol negotiation;
+- capability-provider conflict resolution beyond duplicate registration IDs;
+- disclosure-boundary enforcement;
+- approval routing through Ananke;
+- qualified-context retrieval through Mnemosyne;
+- connector credential rules as executable checks.
 
-Horae consumes a normalised model profile from a separate Model Broker. The profile includes provider and model identity, local/remote and jurisdiction boundary, validated capabilities, context limit, structured-output support, tool-call reliability, model digest when available, privacy properties, and permitted fallback models.
+## Planned Runtime Boundaries
 
-Horae decides whether that model may participate under the active task and disclosure constraints. The broker decides how to communicate with it. Missing or unvalidated required capabilities cause composition to fail.
+Designed boundaries in repository prose:
 
-## Connector and Credential Boundary
+- Ananke owns policy, approval, governed execution, and runtime-owned action audit.
+- Mnemosyne owns memory provenance, reliability, conflicts, freshness, and qualified context.
+- A Model Broker owns provider-specific transport.
+- Connectors or credential brokers own external authentication and raw credentials.
 
-External systems are typed capability providers, for example `github.issues.read`, `github.contents.read`, `github.branch.push`, and `github.pull_request.create`. Workspace access, local Git, and remote GitHub are separate routes.
+These boundaries are consistent across the repository, but only a small part of them is implemented in current code.
 
-Credential custody belongs to a credential broker or connector-specific secure component. Horae holds no raw tokens; models receive no credentials; unrestricted shell access cannot substitute for typed connector routes.
+## Open Questions
 
-## Data Disclosure and Fallback
-
-The active profile declares what data may cross a boundary, such as source code, repository history, customer data, personal data, secrets, Mnemosyne context, and tool results. Sending data to a hosted model is a governed disclosure action. If model and task boundaries conflict, Horae fails composition before transfer.
-
-Fallback is explicit and allowed only if it preserves or strengthens data locality, privacy, permissions, governance, and validated capabilities. It may not silently change a local model to hosted, jurisdiction, endpoint, or restrictions.
-
-## Lifecycle, Failure, and Storage
-
-Horae supervises runtime startup, shutdown, restart, and health transitions. It uses a capability- and risk-specific degraded plan: for example Ananke unavailability denies writes, while Mnemosyne unavailability may permit a low-risk search with a warning but blocks or escalates high-risk work.
-
-Every runtime uses separate storage; a future project layout places independent data under `.project-moirae/ananke/`, `.project-moirae/mnemosyne/`, `.project-moirae/horae/`, `model-profiles/`, `connectors/`, and `validation-reports/`. Secrets remain outside project storage in operating-system credential custody.
+- How protocol negotiation failures should be represented is still unresolved.
+- How multiple equivalent runtime registrations should be ranked is still unresolved.
+- Whether degraded tasks may continue without a required runtime depends on task class and is not yet encoded in public types.
