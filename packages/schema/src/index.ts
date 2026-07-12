@@ -1,12 +1,7 @@
 export type RuntimeKind = "ananke" | "mnemosyne" | "horae" | "gateway" | "mcp-server" | "external";
 
 export type RuntimeHealthStatus =
-  | "healthy"
-  | "busy"
-  | "read_only"
-  | "updating"
-  | "degraded"
-  | "unavailable";
+  "healthy" | "busy" | "read_only" | "updating" | "degraded" | "unavailable";
 
 export type RuntimeLifecycleState =
   | "registered"
@@ -118,8 +113,26 @@ export interface HoraeCapabilityPlan {
   requiredRuntimeIds: string[];
 }
 
+export interface HoraeComposition {
+  id: string;
+  runtimeIds: string[];
+  capabilityIds: string[];
+  createdAt: string;
+}
+
+export type HoraeSessionState = "ready" | "degraded";
+
+export interface HoraeSessionStateAssessment {
+  sessionId: string;
+  compositionId: string;
+  state: HoraeSessionState;
+  checkedAt: string;
+  degradedRuntimeIds: string[];
+}
+
 export interface HoraeSession {
   id: string;
+  composition: HoraeComposition;
   request: HoraeSessionRequest;
   profile: HoraeProfile;
   capabilityPlan: HoraeCapabilityPlan;

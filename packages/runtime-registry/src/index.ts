@@ -8,7 +8,10 @@ import type {
   RuntimeRegistration,
 } from "@horae/schema";
 
-const ALLOWED_LIFECYCLE_TRANSITIONS: Record<RuntimeLifecycleState, readonly RuntimeLifecycleState[]> = {
+const ALLOWED_LIFECYCLE_TRANSITIONS: Record<
+  RuntimeLifecycleState,
+  readonly RuntimeLifecycleState[]
+> = {
   registered: ["initialising", "terminated"],
   initialising: ["ready", "cancelling", "failed"],
   ready: ["busy", "degraded", "cancelling", "terminated", "failed"],
@@ -31,10 +34,33 @@ export interface StaleHeartbeatOptions {
   now?: string;
 }
 
+export interface ProtocolNegotiationResult {
+  expectedProtocolVersion: string;
+  checkedRuntimeIds: string[];
+  compatibleRuntimeIds: string[];
+  incompatibleRuntimeIds: string[];
+}
+
 export class RuntimeLifecycleError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "RuntimeLifecycleError";
+  }
+}
+
+export class RuntimeProtocolCompatibilityError extends Error {
+  readonly runtimeId: string;
+  readonly expectedProtocolVersion: string;
+  readonly actualProtocolVersion: string;
+
+  constructor(runtimeId: string, expectedProtocolVersion: string, actualProtocolVersion: string) {
+    super(
+      `Runtime '${runtimeId}' uses protocol '${actualProtocolVersion}', but Horae requires protocol '${expectedProtocolVersion}'`,
+    );
+    this.name = "RuntimeProtocolCompatibilityError";
+    this.runtimeId = runtimeId;
+    this.expectedProtocolVersion = expectedProtocolVersion;
+    this.actualProtocolVersion = actualProtocolVersion;
   }
 }
 
@@ -61,6 +87,57 @@ export class RuntimeRegistry {
 
   get(id: string): RuntimeRegistration | undefined {
     return this.registrations.get(id);
+  }
+
+  negotiateProtocol(
+    expectedProtocolVersion: string,
+    runtimeIds: readonly string[] = this.list().map((registration) => registration.id),
+  ): ProtocolNegotiationResult {
+    this.requireProtocolVersion(expectedProtocolVersion, "expected protocol version");
+
+    const checkedRuntimeIds = [...new Set(runtimeIds)];
+    const compatibleRuntimeIds: string[] = [];
+    const incompatibleRuntimeIds: string[] = [];
+
+    for (const runtimeId of checkedRuntimeIds) {
+      const registration = this.requireRegistration(runtimeId);
+      this.requireProtocolVersion(
+        registration.identity.protocolVersion,
+        `runtime '${runtimeId}' protocol version`,
+      );
+
+      if (registration.identity.protocolVersion === expectedProtocolVersion) {
+        compatibleRuntimeIds.push(runtimeId);
+      } else {
+        incompatibleRuntimeIds.push(runtimeId);
+      }
+    }
+
+    return {
+      expectedProtocolVersion,
+      checkedRuntimeIds,
+      compatibleRuntimeIds,
+      incompatibleRuntimeIds,
+    };
+  }
+
+  assertProtocolCompatibility(
+    expectedProtocolVersion: string,
+    runtimeIds: readonly string[] = this.list().map((registration) => registration.id),
+  ): ProtocolNegotiationResult {
+    const result = this.negotiateProtocol(expectedProtocolVersion, runtimeIds);
+    const incompatibleRuntimeId = result.incompatibleRuntimeIds[0];
+
+    if (incompatibleRuntimeId) {
+      const registration = this.requireRegistration(incompatibleRuntimeId);
+      throw new RuntimeProtocolCompatibilityError(
+        incompatibleRuntimeId,
+        expectedProtocolVersion,
+        registration.identity.protocolVersion,
+      );
+    }
+
+    return result;
   }
 
   transitionLifecycle(
@@ -254,6 +331,12 @@ export class RuntimeRegistry {
   private requireMaxAge(maxAgeMs: number): void {
     if (!Number.isFinite(maxAgeMs) || maxAgeMs < 0) {
       throw new RuntimeLifecycleError("maxAgeMs must be a non-negative finite number");
+    }
+  }
+
+  private requireProtocolVersion(value: string, label: string): void {
+    if (typeof value !== "string" || value.trim().length === 0) {
+      throw new RuntimeLifecycleError(`${label} must be a non-empty string`);
     }
   }
 }

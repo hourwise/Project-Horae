@@ -9,8 +9,10 @@ Implemented and tested:
 - runtime registration and duplicate-registration rejection;
 - runtime lifecycle transitions and task-ownership checks;
 - heartbeat freshness assessment and stale-runtime degradation;
+- exact protocol compatibility checks for selected session runtimes;
+- duplicate capability-provider rejection for selected session runtimes;
 - capability filtering from healthy registrations;
-- session scaffolding from Ananke and Mnemosyne registrations.
+- session scaffolding with a distinct composition identity and derived ready/degraded assessment.
 
 Implemented but scaffold-level:
 
@@ -22,9 +24,6 @@ Implemented but scaffold-level:
 
 Near-term work justified by current code shape:
 
-- add protocol negotiation and compatibility checks around `RuntimeIdentity.protocolVersion`;
-- add explicit capability-provider conflict detection beyond duplicate registration IDs;
-- define first-class composition identity and session-level degraded state;
 - persist correlation and audit references beyond the in-memory audit router;
 - decide how negotiation failures and degraded tasks should be represented.
 

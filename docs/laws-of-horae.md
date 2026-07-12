@@ -53,6 +53,7 @@ Why this is accepted:
 
 - `markStaleRuntimes()` marks stale registrations as degraded and preserves a degradation message in [`packages/runtime-registry/src/index.ts`](../packages/runtime-registry/src/index.ts).
 - Stale-heartbeat degradation and retained task ownership are tested in [`packages/testbench/src/lifecycle.test.ts`](../packages/testbench/src/lifecycle.test.ts).
+- `SessionOrchestrator.assessState()` surfaces a derived `degraded` state and affected runtime IDs for a session's selected composition.
 
 ### Law 6. Correlation Does Not Transfer Authority
 
@@ -60,7 +61,7 @@ Correlation identifiers connect events and state across runtimes, but they do no
 
 Why this is accepted:
 
-- The current public types expose `HoraeSession.id`, `HoraeEvent.id`, `HoraeEvent.sessionId`, `HoraeEvent.runtimeId`, and `RuntimeLifecycle.taskId` in [`packages/schema/src/index.ts`](../packages/schema/src/index.ts).
+- The current public types expose `HoraeSession.id`, `HoraeComposition.id`, `HoraeEvent.id`, `HoraeEvent.sessionId`, `HoraeEvent.runtimeId`, and `RuntimeLifecycle.taskId` in [`packages/schema/src/index.ts`](../packages/schema/src/index.ts).
 - No code path in the repository treats a correlation field as an approval or credential.
 
 ### Law 7. Aggregate Records Do Not Replace Runtime-Owned Audit
@@ -89,8 +90,8 @@ Horae should reject incompatible protocol versions, runtime identities, capabili
 
 Why this is proposed:
 
-- `RuntimeIdentity.protocolVersion` exists in the public schema, but the current `RuntimeRegistry` does not negotiate or reject protocol versions.
-- The rule appears in [implementation-plan.md](implementation-plan.md), [runtime-integration.md](runtime-integration.md), and [roadmap.md](roadmap.md) as planned behavior.
+- Exact protocol compatibility for selected runtimes is now checked by `RuntimeRegistry` and `SessionOrchestrator` before session creation.
+- Identity verification, broader capability compatibility, and disclosure conflict checks remain unimplemented, so the broader law is not yet fully enforceable. Exact duplicate selected capability IDs are rejected.
 
 ### Proposed Law 10. Never Silently Bypass a Required Runtime
 

@@ -21,18 +21,18 @@ The governing rule is: **coordination may reduce capability, but must never sile
 
 ## Current Code Surface
 
-| Package                       | Current repository evidence                                                                            |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `@horae/schema`               | Exported runtime, health, lifecycle, capability, profile, session, and event types                     |
-| `@horae/runtime-registry`     | Registration, lifecycle transitions, heartbeat recording, stale-heartbeat degradation, deregistration  |
-| `@horae/capability-planner`   | Capability filtering for healthy registrations based on requested capabilities or profile requirements |
-| `@horae/session-orchestrator` | Session scaffolding from a request, profile, and current registry state                                |
-| `@horae/audit-router`         | In-memory event collection                                                                             |
-| `@horae/ananke-binding`       | `inspect()` interface only                                                                             |
-| `@horae/mnemosyne-binding`    | `inspect()` interface only                                                                             |
-| `@horae/gateway-adapter`      | `inspect()` interface only                                                                             |
-| `@horae/cli`                  | Scaffold command surface for `inspect`, `register`, `plan`, `session`, and `graph`                     |
-| `@horae/testbench`            | Lifecycle and orchestration scaffold tests                                                             |
+| Package                       | Current repository evidence                                                                                                 |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `@horae/schema`               | Exported runtime, health, lifecycle, capability, profile, session, composition, and event types                             |
+| `@horae/runtime-registry`     | Registration, protocol negotiation, lifecycle transitions, heartbeat recording, stale-heartbeat degradation, deregistration |
+| `@horae/capability-planner`   | Capability filtering and selected duplicate-capability detection                                                            |
+| `@horae/session-orchestrator` | Session scaffolding, composition identity, and session-state assessment                                                     |
+| `@horae/audit-router`         | In-memory event collection                                                                                                  |
+| `@horae/ananke-binding`       | `inspect()` interface only                                                                                                  |
+| `@horae/mnemosyne-binding`    | `inspect()` interface only                                                                                                  |
+| `@horae/gateway-adapter`      | `inspect()` interface only                                                                                                  |
+| `@horae/cli`                  | Scaffold command surface for `inspect`, `register`, `plan`, `session`, and `graph`                                          |
+| `@horae/testbench`            | Lifecycle and orchestration scaffold tests                                                                                  |
 
 ## Documentation
 
@@ -57,9 +57,11 @@ Implemented and tested:
 - runtime registration and duplicate-registration rejection;
 - lifecycle transition validation for `registered`, `initialising`, `ready`, `busy`, `waiting`, `degraded`, `cancelling`, `terminated`, and `failed`;
 - stale-heartbeat assessment and stale-runtime degradation;
+- exact protocol compatibility checks for runtimes selected into a session composition;
+- rejection of duplicate capability IDs from multiple selected runtimes;
 - task ownership retention across active and degraded runtime states;
 - capability planning from profile requirements and healthy registrations;
-- session scaffolding for Ananke and Mnemosyne registrations.
+- session scaffolding with a distinct composition identity and derived ready/degraded assessment.
 
 Implemented but still scaffold-level:
 
@@ -69,7 +71,6 @@ Implemented but still scaffold-level:
 
 Designed or proposed in documentation, but not implemented in the current public code:
 
-- protocol negotiation and compatibility enforcement;
 - governed execution and approval binding through Ananke;
 - qualified context-pack retrieval and memory reliability handling through Mnemosyne;
 - typed aggregate outcomes such as `PARTIAL_SUCCESS` and `RECOVERABLE_RETRY`;

@@ -8,7 +8,8 @@ Implemented and tested:
 
 - runtimes register through `RuntimeRegistry` with `RuntimeRegistration`;
 - registrations carry `RuntimeIdentity`, `RuntimeHealth`, optional `RuntimeLifecycle`, and declared capabilities;
-- session scaffolding reads those registrations to build a `HoraeCapabilityPlan` and `HoraeSession`.
+- session scaffolding reads those registrations to build a `HoraeCapabilityPlan`, `HoraeComposition`, and `HoraeSession`.
+- `SessionOrchestrator.assessState()` derives `ready` or `degraded` for a session's selected runtime IDs without changing lifecycle state or replanning.
 
 Implemented but scaffold-level:
 
@@ -32,11 +33,11 @@ Implemented and tested:
 - busy state requires task ownership;
 - out-of-order heartbeats are rejected;
 - stale active runtimes are degraded.
+- selected runtimes with a protocol version different from Horae's expected version are rejected before session creation;
+- selected runtimes that advertise the same capability ID are rejected before session creation;
 
 Not yet enforced in current public code:
 
-- protocol negotiation;
-- capability-provider conflict resolution beyond duplicate registration IDs;
 - disclosure-boundary enforcement;
 - approval routing through Ananke;
 - qualified-context retrieval through Mnemosyne;
@@ -53,8 +54,13 @@ Designed boundaries in repository prose:
 
 These boundaries are consistent across the repository, but only a small part of them is implemented in current code.
 
+Protocol compatibility currently uses exact string equality. `RuntimeRegistry.negotiateProtocol()` returns the compatible and incompatible selected runtime IDs, while `assertProtocolCompatibility()` raises `RuntimeProtocolCompatibilityError` for the first mismatch. No fallback or range-based compatibility is implemented.
+
+Capability-provider conflict detection treats the same capability ID from multiple selected runtimes as a conflict and raises `CapabilityProviderConflictError`. It does not choose between distinct capability IDs that provide an equivalent category.
+
 ## Open Questions
 
-- How protocol negotiation failures should be represented is still unresolved.
+- Whether protocol versions should gain range or feature negotiation semantics is unresolved.
+- Broader negotiation failure categories, such as identity mismatch or unsupported capability features, are not yet represented.
 - How multiple equivalent runtime registrations should be ranked is still unresolved.
 - Whether degraded tasks may continue without a required runtime depends on task class and is not yet encoded in public types.

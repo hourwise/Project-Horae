@@ -29,19 +29,20 @@ Why it remains open:
 Current state:
 
 - `HoraeSession.id` exists.
-- There is no first-class composition identifier.
+- `HoraeSession.composition` carries a distinct `HoraeComposition.id` with the selected runtime and capability IDs.
 
 Why it remains open:
 
-- A degraded or recovered composition may need a stable identity for audit and operator understanding.
-- Replanning after runtime loss might reasonably produce a new composition.
+- The current identity is created with the session and is not persisted.
+- It remains unresolved whether recovery or degraded replanning preserves that composition ID or creates a new one.
 
 ### How should Horae choose among multiple runtime instances?
 
 Current state:
 
 - `RuntimeRegistry` can store multiple registrations.
-- The planner filters by health and capability, but it does not rank or arbitrate between several equivalent providers.
+- The planner rejects multiple selected runtimes advertising the same capability ID.
+- It does not rank or arbitrate between several equivalent providers with distinct capability IDs.
 
 Why it remains open:
 
@@ -54,6 +55,7 @@ Why it remains open:
 Current state:
 
 - Runtime-level degradation is implemented.
+- `SessionOrchestrator.assessState()` exposes a derived `degraded` state and the affected runtime IDs.
 - Task-level degraded plans are only described in prose.
 
 Why it remains open:
@@ -78,12 +80,12 @@ Why it remains open:
 Current state:
 
 - The public code exposes per-runtime health and lifecycle state.
-- There is no implemented session-level health summary.
+- `SessionOrchestrator.assessState()` exposes a ready/degraded session summary and the affected runtime IDs.
 
 Why it remains open:
 
 - Operators often want a summary view.
-- A summary can become misleading if it hides that one required runtime failed.
+- The current summary does not encode capability risk, safe reduced operation, or detailed degradation reasons.
 
 ### What is runtime identity after recovery?
 
@@ -115,11 +117,13 @@ Why it remains open:
 Current state:
 
 - `RuntimeIdentity.protocolVersion` exists in the schema.
-- No public code negotiates or rejects protocol versions yet.
+- `RuntimeRegistry.negotiateProtocol()` reports exact-version compatibility for selected registrations.
+- `RuntimeRegistry.assertProtocolCompatibility()` rejects the first mismatch with `RuntimeProtocolCompatibilityError`.
 
 Why it remains open:
 
-- A failure may need to distinguish identity mismatch, version mismatch, missing feature, stale schema, or unsafe fallback.
+- The current error representation covers version mismatch only. Identity mismatch, missing feature, stale schema, and unsafe fallback are not yet modeled.
+- The repository has not defined whether future protocol versions should use range or feature negotiation.
 
 ## Correlation
 

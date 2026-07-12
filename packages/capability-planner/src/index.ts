@@ -2,8 +2,57 @@ import type {
   HoraeCapabilityPlan,
   HoraeProfile,
   HoraeSessionRequest,
+  RuntimeCapability,
   RuntimeRegistration,
 } from "@horae/schema";
+
+export interface CapabilityProviderConflict {
+  capabilityId: string;
+  runtimeIds: string[];
+}
+
+export class CapabilityProviderConflictError extends Error {
+  readonly capabilityId: string;
+  readonly runtimeIds: string[];
+
+  constructor(conflict: CapabilityProviderConflict) {
+    super(
+      `Capability '${conflict.capabilityId}' is provided by multiple selected runtimes: ${conflict.runtimeIds.join(", ")}`,
+    );
+    this.name = "CapabilityProviderConflictError";
+    this.capabilityId = conflict.capabilityId;
+    this.runtimeIds = conflict.runtimeIds;
+  }
+}
+
+export function findCapabilityProviderConflicts(
+  capabilities: readonly RuntimeCapability[],
+): CapabilityProviderConflict[] {
+  const runtimeIdsByCapabilityId = new Map<string, Set<string>>();
+
+  for (const capability of capabilities) {
+    const runtimeIds = runtimeIdsByCapabilityId.get(capability.id) ?? new Set<string>();
+    runtimeIds.add(capability.runtimeId);
+    runtimeIdsByCapabilityId.set(capability.id, runtimeIds);
+  }
+
+  return [...runtimeIdsByCapabilityId].flatMap(([capabilityId, runtimeIds]) =>
+    runtimeIds.size > 1 ? [{ capabilityId, runtimeIds: [...runtimeIds] }] : [],
+  );
+}
+
+export function assertNoCapabilityProviderConflicts(
+  capabilities: readonly RuntimeCapability[],
+): CapabilityProviderConflict[] {
+  const conflicts = findCapabilityProviderConflicts(capabilities);
+  const firstConflict = conflicts[0];
+
+  if (firstConflict) {
+    throw new CapabilityProviderConflictError(firstConflict);
+  }
+
+  return conflicts;
+}
 
 export function planCapabilities(
   request: HoraeSessionRequest,
@@ -22,7 +71,10 @@ export function planCapabilities(
       .filter((capability) => !visibleIds.has(capability.id))
       .map((capability) => ({
         capability,
-        reason: registration.health.status === "healthy" ? "not_requested" as const : "unhealthy_runtime" as const,
+        reason:
+          registration.health.status === "healthy"
+            ? ("not_requested" as const)
+            : ("unhealthy_runtime" as const),
       })),
   );
 

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { RuntimeRegistry, SessionOrchestrator } from "@horae/runtime-core";
+import {
+  CapabilityProviderConflictError,
+  RuntimeProtocolCompatibilityError,
+  RuntimeRegistry,
+  SessionOrchestrator,
+} from "@horae/runtime-core";
 import type { HoraeProfile, RuntimeRegistration } from "@horae/runtime-core";
 
 const profile: HoraeProfile = {
@@ -76,5 +81,123 @@ describe("Horae orchestration scaffold", () => {
       "ananke.policy.development",
       "mnemosyne.memory.workspace",
     ]);
+    expect(session.composition).toEqual({
+      id: expect.stringMatching(/^composition_\d+$/),
+      runtimeIds: ["ananke-local", "mnemosyne-local"],
+      capabilityIds: ["ananke.policy.development", "mnemosyne.memory.workspace"],
+      createdAt: session.startedAt,
+    });
+    expect(session.composition.id).not.toBe(session.id);
+  });
+
+  it("assesses a session as degraded when a selected runtime is no longer healthy", () => {
+    const registry = new RuntimeRegistry();
+    registry.register(ananke);
+    registry.register(mnemosyne);
+
+    const orchestrator = new SessionOrchestrator(registry);
+    const session = orchestrator.start(
+      {
+        projectId: "project-horae",
+        profileId: profile.id,
+        task: "Plan a governed MCP editing session",
+      },
+      profile,
+    );
+
+    expect(orchestrator.assessState(session, "2026-07-10T00:01:00.000Z")).toEqual({
+      sessionId: session.id,
+      compositionId: session.composition.id,
+      state: "ready",
+      checkedAt: "2026-07-10T00:01:00.000Z",
+      degradedRuntimeIds: [],
+    });
+
+    registry.recordHeartbeat("ananke-local", {
+      status: "degraded",
+      checkedAt: "2026-07-10T00:02:00.000Z",
+    });
+
+    expect(orchestrator.assessState(session, "2026-07-10T00:03:00.000Z")).toEqual({
+      sessionId: session.id,
+      compositionId: session.composition.id,
+      state: "degraded",
+      checkedAt: "2026-07-10T00:03:00.000Z",
+      degradedRuntimeIds: ["ananke-local"],
+    });
+  });
+
+  it("rejects an incompatible protocol for a selected runtime before session start", () => {
+    const registry = new RuntimeRegistry();
+    registry.register({
+      ...ananke,
+      identity: {
+        ...ananke.identity,
+        protocolVersion: "0.0.9",
+      },
+    });
+    registry.register(mnemosyne);
+
+    expect(() =>
+      new SessionOrchestrator(registry).start(
+        {
+          projectId: "project-horae",
+          profileId: profile.id,
+          task: "Plan a governed MCP editing session",
+        },
+        profile,
+      ),
+    ).toThrow(RuntimeProtocolCompatibilityError);
+  });
+
+  it("rejects an exact capability ID offered by multiple selected runtimes", () => {
+    const registry = new RuntimeRegistry();
+    registry.register(ananke);
+    registry.register({
+      ...ananke,
+      id: "ananke-secondary",
+      capabilities: ananke.capabilities.map((capability) => ({
+        ...capability,
+        runtimeId: "ananke-secondary",
+      })),
+    });
+    registry.register(mnemosyne);
+
+    expect(() =>
+      new SessionOrchestrator(registry).start(
+        {
+          projectId: "project-horae",
+          profileId: profile.id,
+          task: "Plan a governed MCP editing session",
+        },
+        profile,
+      ),
+    ).toThrow(CapabilityProviderConflictError);
+  });
+
+  it("does not reject an unselected conflicting capability", () => {
+    const registry = new RuntimeRegistry();
+    registry.register(ananke);
+    registry.register({
+      ...ananke,
+      id: "ananke-secondary",
+      capabilities: ananke.capabilities.map((capability) => ({
+        ...capability,
+        runtimeId: "ananke-secondary",
+      })),
+    });
+    registry.register(mnemosyne);
+
+    const session = new SessionOrchestrator(registry).start(
+      {
+        projectId: "project-horae",
+        profileId: profile.id,
+        task: "Plan a memory-only session",
+        requestedCapabilities: ["memory"],
+      },
+      profile,
+    );
+
+    expect(session.runtimeIds).toEqual(["mnemosyne-local"]);
   });
 });

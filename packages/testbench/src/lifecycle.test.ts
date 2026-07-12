@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { RuntimeLifecycleError, RuntimeRegistry } from "@horae/runtime-registry";
+import {
+  RuntimeLifecycleError,
+  RuntimeProtocolCompatibilityError,
+  RuntimeRegistry,
+} from "@horae/runtime-registry";
 import type { RuntimeRegistration } from "@horae/schema";
 
 function runtime(): RuntimeRegistration {
@@ -179,6 +183,33 @@ describe("runtime lifecycle", () => {
     expect(() => registry.register(runtime())).toThrow("already registered");
     expect(() => registry.transitionLifecycle("missing", "initialising")).toThrow(
       "is not registered",
+    );
+  });
+
+  it("negotiates selected runtime protocols and rejects incompatible versions", () => {
+    const registry = new RuntimeRegistry();
+    registry.register(runtime());
+    registry.register({
+      ...runtime(),
+      id: "legacy-worker",
+      identity: {
+        ...runtime().identity,
+        protocolVersion: "0.0.9",
+      },
+    });
+
+    expect(registry.negotiateProtocol("0.1.0", ["worker-local"])).toEqual({
+      expectedProtocolVersion: "0.1.0",
+      checkedRuntimeIds: ["worker-local"],
+      compatibleRuntimeIds: ["worker-local"],
+      incompatibleRuntimeIds: [],
+    });
+
+    expect(() => registry.assertProtocolCompatibility("0.1.0", ["legacy-worker"])).toThrow(
+      RuntimeProtocolCompatibilityError,
+    );
+    expect(() => registry.assertProtocolCompatibility("0.1.0", ["legacy-worker"])).toThrow(
+      "requires protocol '0.1.0'",
     );
   });
 });

@@ -15,11 +15,16 @@ The current public code provides:
 
 ## Phase 1: Runtime Registry and Composition Validation
 
+Completed in the current implementation:
+
+- exact protocol compatibility checks for selected runtimes using `RuntimeIdentity.protocolVersion`;
+- typed rejection before session creation through `RuntimeProtocolCompatibilityError`;
+- typed rejection when multiple selected runtimes advertise the same capability ID;
+- a distinct `HoraeComposition` identity for each created session and `SessionOrchestrator.assessState()` for derived ready/degraded state.
+
 Planned work:
 
 - verify runtime identity beyond local registration presence;
-- negotiate protocol compatibility using `RuntimeIdentity.protocolVersion`;
-- detect conflicting capability providers;
 - validate profile fields against public types and supported values;
 - add explicit composition rejection for incompatible or missing required capabilities.
 
@@ -36,8 +41,7 @@ Planned work:
 
 Planned work:
 
-- introduce session-level state that is distinct from per-runtime lifecycle state;
-- define degraded-session behavior when one runtime fails;
+- define session-state transitions, degraded plans, and responses to runtime failure;
 - add task-level cancellation ownership and recovery semantics;
 - add durable correlation persistence if recovery requires it.
 
@@ -63,5 +67,5 @@ Planned or proposed work:
 - whether memory is required for all task classes;
 - whether a recovered runtime keeps the same identity;
 - whether safe degraded mode is capability-specific or profile-specific or both;
-- whether composition identity is separate from session identity;
+- whether composition identity survives recovery, restart, or degraded replanning;
 - how automatic restart should work for authority-bearing runtimes.

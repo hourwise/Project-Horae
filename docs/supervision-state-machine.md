@@ -164,9 +164,10 @@ Documentation note:
 
 - Lowercase `ready`, `degraded`, `cancelling`, and `failed` are implemented as runtime lifecycle states.
 - `DISCOVERING`, `PLANNING`, `VALIDATING`, `STARTING`, `RUNNING`, `PAUSING`, `PAUSED`, and `COMPLETED` are not implemented as Horae public lifecycle states today.
+- `HoraeSessionStateAssessment` exposes `ready` or `degraded` as a derived session observation; it is not a session lifecycle state machine.
 
 ## Open Questions
 
 - Whether cancellation is owned by Horae, the task owner, or the runtime itself is not fully specified beyond the current transition API.
 - Whether automatic restart should be allowed for authority-bearing runtimes is unresolved.
-- Whether session-level orchestration phases should exist separately from runtime lifecycle states is unresolved.
+- Whether session-level orchestration phases or transitions should exist beyond ready/degraded assessment is unresolved.

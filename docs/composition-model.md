@@ -48,9 +48,15 @@ Implemented and tested:
 - A registration includes `id`, `identity`, `health`, capabilities, and optional lifecycle state.
 - Duplicate registration IDs are rejected.
 
+Implemented and tested:
+
+- `RuntimeRegistry.negotiateProtocol()` compares selected registrations with the expected Horae protocol version.
+- `SessionOrchestrator.start()` rejects a selected runtime whose protocol version does not exactly match the configured Horae protocol version.
+- The default session protocol version is `0.1.0`; `SessionOrchestrator` accepts an explicit override for a future host contract.
+
 Designed:
 
-- Cross-runtime discovery, identity verification, and protocol compatibility checks are repeatedly planned but are not yet implemented in the public `RuntimeRegistry`.
+- Cross-runtime discovery and identity verification remain planned. Protocol compatibility is implemented only as exact string matching; the schema does not define semver or range negotiation.
 
 ## Capability Selection
 
@@ -59,6 +65,7 @@ Implemented and tested:
 - `planCapabilities()` selects visible capabilities from healthy registrations only.
 - A capability becomes visible when its `id` or `category` matches either `request.requestedCapabilities` or `profile.requiredRuntimeCapabilities`.
 - Hidden capabilities are still tracked, with reasons `not_requested` or `unhealthy_runtime`.
+- `findCapabilityProviderConflicts()` detects when more than one selected runtime advertises the same capability ID, and `SessionOrchestrator.start()` rejects that composition.
 
 Implemented but scaffold-level:
 
@@ -94,24 +101,22 @@ Implemented and tested:
 
 Limit:
 
-- Validation currently means healthy-registration filtering and capability matching. It does not yet include protocol negotiation, disclosure checks, model capability checks, or policy enforcement.
+- Validation includes healthy-registration filtering, capability matching, and exact protocol compatibility checks for selected runtimes. It does not yet include disclosure checks, model capability checks, or policy enforcement.
 
 ### Running composition
 
 Implemented but scaffold-level:
 
-- `SessionOrchestrator.start()` returns a `HoraeSession` with `runtimeIds` and `startedAt`.
+- `SessionOrchestrator.start()` returns a `HoraeSession` with `runtimeIds`, `startedAt`, and a distinct `HoraeComposition` record.
 - This creates a session record, but it does not start runtime processes, claim tasks, or execute actions.
 
 ### Degraded composition
 
-Implemented and tested at runtime level:
+Implemented and tested:
 
 - Individual runtime registrations can become degraded because of explicit lifecycle transition or stale heartbeat handling.
-
-Designed at composition level:
-
-- There is no first-class task- or session-level degraded composition type yet.
+- `SessionOrchestrator.assessState()` reports a session as `degraded` when one of its selected runtimes is missing, no longer healthy, or has a degraded, cancelling, terminated, or failed lifecycle state.
+- The assessment identifies the degraded runtime IDs and does not itself mutate runtime lifecycle state, replan the composition, or continue work.
 
 ## Rejection Conditions
 
@@ -122,9 +127,18 @@ Implemented and tested:
 - Busy state without task ownership is rejected.
 - Out-of-order heartbeats are rejected.
 
+Implemented and tested:
+
+- Incompatible protocol versions are rejected for selected runtimes before `SessionOrchestrator.start()` creates a session.
+- A selected capability ID advertised by more than one runtime is rejected before `SessionOrchestrator.start()` creates a session.
+
 Designed:
 
-- Missing capability, incompatible protocol, duplicate conflicting providers, model mismatch, disclosure conflict, and required-runtime absence are planned rejection conditions but are not all enforced in current public code.
+- Missing capability, model mismatch, disclosure conflict, and required-runtime absence remain planned rejection conditions and are not all enforced in current public code.
+
+Open question:
+
+- Multiple providers with distinct capability IDs remain selectable. The repository does not yet define how Horae chooses among equivalent providers.
 
 ## Model and Provider Requirements
 
@@ -145,8 +159,9 @@ Designed:
 Implemented and tested:
 
 - `HoraeSession.id` identifies a session created by `SessionOrchestrator.start()`.
+- `HoraeSession.composition` is a first-class `HoraeComposition` record with its own ID, selected runtime IDs, selected capability IDs, and creation time.
+- `HoraeComposition.id` is distinct from `HoraeSession.id`; neither current string format is a stable external contract.
 
 Open question:
 
-- The repository does not yet define a first-class composition identifier separate from the session identifier.
 - It is unresolved whether a composition remains the same identity after recovery, restart, or degraded replanning.
