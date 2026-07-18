@@ -1,0 +1,22 @@
+{
+  "project": "Project Adrasteia",
+  "repository": "https://github.com/hourwise/Project-Adrasteia",
+  "tag": "adrasteia-adoption-v0.4.0-protocol-1.4.0",
+  "commit": "124b6aee2629a3147739934ad5f1b45b32c8ba46",
+  "package": { "name": "project-runtime-contracts", "version": "0.4.0" },
+  "protocol": { "name": "Fates Runtime Protocol", "current": "1.4.0", "minimum": "1.0.0", "maximum": "1.4.0" },
+  "artifact": {
+    "url": "https://github.com/hourwise/Project-Adrasteia/releases/download/adrasteia-adoption-v0.4.0-protocol-1.4.0/project-runtime-contracts-0.4.0.tgz",
+    "sha256": "11ee062b079f74d2a4558af315c9b9b12a6aede291d409c48f038d93c416e2c2"
+  },
+  "contentPreflightIncluded": false,
+  "adoptedFamilies": ["runtime identity", "health", "readiness", "registration", "endpoints", "capabilities", "compatibility", "protocol negotiation", "dual-principal execution context", "resource scope", "correlation", "portable references"],
+  "adapterOwnedFamilies": ["canonical parsing", "Horae inspection composition", "semantic negotiation", "baseline validation"],
+  "horaeLocalFamilies": ["admission", "lifecycle", "observation freshness", "profile", "capability plan", "composition", "session", "degradation", "Horae events"],
+  "deferredFamilies": ["content preflight", "governed execution", "memory retrieval", "credential brokering", "provider routing", "durable state", "Moirae Code integration"],
+  "comparators": {
+    "ananke": { "tag": "ananke-adrasteia-adoption-v0.1.0-protocol-1.4.0", "commit": "dcbb115c5798072221afdd2e4fdd36e786defddf" },
+    "mnemosyne": { "tag": "mnemosyne-adrasteia-adoption-v0.1.0-protocol-1.4.0", "commit": "f4ab76a9760f856d78908d35facceb068d78c8e5" }
+  },
+  "verificationCommands": ["npm run verify:adrasteia", "npm run test:ananke:comparator", "npm run test:mnemosyne:comparator"]
+}

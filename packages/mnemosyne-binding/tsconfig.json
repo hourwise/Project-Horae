@@ -4,6 +4,6 @@
     "rootDir": "src",
     "composite": true
   },
-  "references": [{ "path": "../schema" }],
+  "references": [{ "path": "../adrasteia-adapter" }, { "path": "../schema" }],
   "include": ["src/**/*.ts"]
 }

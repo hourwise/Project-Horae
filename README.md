@@ -1,98 +1,48 @@
 # Project Horae
 
-Horae is a TypeScript workspace for a composition and supervision runtime in the Moirae ecosystem.
+Horae is a TypeScript composition and supervision runtime for the Fates ecosystem. It has adopted the immutable Project Adrasteia Stage-A baseline: `project-runtime-contracts@0.4.0`, Fates Runtime Protocol 1.4.0, with semantic compatibility across 1.0.0–1.4.0.
 
-The current repository contains:
+Horae owns discovery, admission, capability reduction, composition planning, session identity, local lifecycle/freshness supervision, degradation assessment and cross-runtime correlation. It does not own policy, approval, governed execution, memory truth, provenance, qualified retrieval, provider routing, credentials or another runtime's audit authority.
 
-- implemented and tested runtime-registration lifecycle logic in `@horae/runtime-registry`;
-- implemented and tested capability planning and session scaffolding in `@horae/capability-planner`, `@horae/session-orchestrator`, and `@horae/runtime-core`;
-- implemented but minimal bindings and audit scaffolding in `@horae/ananke-binding`, `@horae/mnemosyne-binding`, `@horae/gateway-adapter`, and `@horae/audit-router`;
-- design and planning documents for broader composition, governance, degradation, correlation, and recovery behavior.
+## Current Stage-A Surface
 
-The official IDE name is **Moirae Code**. Use that name consistently in repository documentation and user-facing copy.
+| Package | Evidence |
+| --- | --- |
+| `@horae/adrasteia-adapter` | Pure canonical parsing, semantic negotiation, Horae inspection and baseline validation |
+| `@horae/runtime-registry` | Separate canonical peer registration from local admission, lifecycle and freshness |
+| `@horae/capability-planner` | Readiness/exposure/dependency-aware capability reduction and deterministic conflict rejection |
+| `@horae/session-orchestrator` | Trusted dual-principal request validation, bounded scope, UUID session/composition identities |
+| `@horae/ananke-binding` | Read-only binding to documented public Ananke inspection endpoints |
+| `@horae/mnemosyne-binding` | Read-only callback binding for Mnemosyne's transport-neutral inspection facade |
+| `@horae/cli` | `inspect --json`, `validate-baseline`, and `negotiate` evidence commands |
 
-## What Horae Owns
+`horae inspect --json` exposes a sanitized, Adrasteia-valid description. It does not expose credentials, paths, raw task text, peer memory or action arguments.
 
-Horae owns runtime discovery, capability matching, compatibility negotiation, composition planning, lifecycle supervision where implemented, health aggregation, orchestration state, cross-runtime correlation, and degradation or recovery coordination.
+## Important boundaries
 
-Horae does not own action approval or policy, approval creation, memory reliability or truth, runtime-owned authoritative audit, raw provider credentials, direct tool authority, or permission escalation.
+- Discovery, compatibility, admission, health, capability declarations, references and correlation never grant action authority.
+- Ananke remains the sole action-policy, approval and governed-execution authority.
+- Mnemosyne remains the sole memory, provenance, reliability and qualified-context authority.
+- Capability planning may reduce availability but never silently expands it.
+- Peer health/readiness remains peer-reported; Horae's lifecycle and freshness are local facts.
+- Content preflight is excluded from the pinned Stage-A baseline. The existing preflight ADR remains Proposed/Deferred.
 
-The governing rule is: **coordination may reduce capability, but must never silently expand it.**
-
-## Current Code Surface
-
-| Package                       | Current repository evidence                                                                                                 |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `@horae/schema`               | Exported runtime, health, lifecycle, capability, profile, session, composition, and event types                             |
-| `@horae/runtime-registry`     | Registration, protocol negotiation, lifecycle transitions, heartbeat recording, stale-heartbeat degradation, deregistration |
-| `@horae/capability-planner`   | Capability filtering and selected duplicate-capability detection                                                            |
-| `@horae/session-orchestrator` | Session scaffolding, composition identity, and session-state assessment                                                     |
-| `@horae/audit-router`         | In-memory event collection                                                                                                  |
-| `@horae/ananke-binding`       | `inspect()` interface only                                                                                                  |
-| `@horae/mnemosyne-binding`    | `inspect()` interface only                                                                                                  |
-| `@horae/gateway-adapter`      | `inspect()` interface only                                                                                                  |
-| `@horae/cli`                  | Scaffold command surface for `inspect`, `register`, `plan`, `session`, and `graph`                                          |
-| `@horae/testbench`            | Lifecycle and orchestration scaffold tests                                                                                  |
-
-## Documentation
-
-- [Architecture](docs/architecture.md)
-- [Laws of Horae](docs/laws-of-horae.md)
-- [Composition Model](docs/composition-model.md)
-- [Supervision State Machine](docs/supervision-state-machine.md)
-- [Degradation and Recovery](docs/degradation-and-recovery.md)
-- [Correlation Model](docs/correlation-model.md)
-- [Ownership Matrix](docs/architecture/ownership-matrix.md)
-- [Runtime Integration](docs/runtime-integration.md)
-- [Implementation Plan](docs/implementation-plan.md)
-- [Roadmap](docs/roadmap.md)
-- [Research and Requirements](docs/PROJECT_HORAE_RESEARCH_AND_REQUIREMENTS.md)
-- [Decision Index](docs/decisions/README.md)
-- [Open Design Questions](docs/notes/open-design-questions.md)
-
-## Status
-
-Implemented and tested:
-
-- runtime registration and duplicate-registration rejection;
-- lifecycle transition validation for `registered`, `initialising`, `ready`, `busy`, `waiting`, `degraded`, `cancelling`, `terminated`, and `failed`;
-- stale-heartbeat assessment and stale-runtime degradation;
-- exact protocol compatibility checks for runtimes selected into a session composition;
-- rejection of duplicate capability IDs from multiple selected runtimes;
-- task ownership retention across active and degraded runtime states;
-- capability planning from profile requirements and healthy registrations;
-- session scaffolding with a distinct composition identity and derived ready/degraded assessment.
-
-Implemented but still scaffold-level:
-
-- binding interfaces for Ananke, Mnemosyne, and gateway inspection;
-- in-memory audit event collection;
-- CLI command surface beyond `help`.
-
-Designed or proposed in documentation, but not implemented in the current public code:
-
-- governed execution and approval binding through Ananke;
-- qualified context-pack retrieval and memory reliability handling through Mnemosyne;
-- typed aggregate outcomes such as `PARTIAL_SUCCESS` and `RECOVERABLE_RETRY`;
-- provider and connector routing;
-- mandatory Content Surface Preflight routing from the proposed ADR.
-
-## Development
-
-Run tests:
+## Verification
 
 ```bash
-npm test
+npm ci
+npm run validate
+npm audit --omit=dev
 ```
 
-Run the current testbench only:
+Useful focused commands:
 
 ```bash
-npm run test:bench
+npm run verify:adrasteia
+npm run test:ananke:comparator
+npm run test:mnemosyne:comparator
+npm run test:cli
+node packages/cli/dist/index.js inspect --json
 ```
 
-Build the workspace:
-
-```bash
-npm run build
-```
+The exact artifact, digest and peer pins are in [the Stage-A baseline](docs/integration/adrasteia-baseline.json). See [the composition boundary](docs/integration/stage-a-composition.md) and [ADR-0001](docs/decisions/ADR-0001-project-adrasteia-stage-a-composition-boundary.md) for limits and rollback.

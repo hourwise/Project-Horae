@@ -13,6 +13,15 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm install
+      - run: npm ci
+      - run: npm run verify:adrasteia
       - run: npm run build
+      - run: npm run lint
       - run: npm test
+      - run: npm run test:adrasteia:conformance
+      - run: npm run test:ananke:comparator
+      - run: npm run test:mnemosyne:comparator
+      - run: npm run test:bench
+      - run: npm run test:cli
+      - run: npm run test:composition
+      - run: git diff --check

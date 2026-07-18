@@ -4,11 +4,11 @@
 - **Date:** 2026-07-12
 - **Decision owners:** Project Horae maintainers
 - **Applies to:** Project Horae
-- **Depends on:** Project Runtime Contracts Content Surface Preflight types
+- **Depends on:** a future cross-owner Project Adrasteia content-preflight contract
 
 ## Context
 
-Horae routes and coordinates work across the Fates ecosystem. A gap exists between authorising a content-bearing operation and exposing its returned content to an agent, user, downstream tool, or persistent memory.
+Horae routes and coordinates work across the Fates ecosystem. Project Adrasteia Stage-A explicitly excludes content preflight, so this proposal is deferred and makes no current compatibility claim.
 
 A legitimate tool may return hostile instructions, secrets, malformed structures, embedded scripts, or excessive payloads. The routing layer is the correct place to prevent bypass.
 

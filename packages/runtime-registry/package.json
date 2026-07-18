@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@horae/adrasteia-adapter": "0.1.0",
     "@horae/schema": "0.1.0"
   }
 }

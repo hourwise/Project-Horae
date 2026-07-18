@@ -12,6 +12,7 @@
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
+    "@horae/adrasteia-adapter": "0.1.0",
     "@horae/runtime-core": "0.1.0"
   }
 }

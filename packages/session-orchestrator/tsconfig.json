@@ -5,6 +5,7 @@
     "composite": true
   },
   "references": [
+    { "path": "../adrasteia-adapter" },
     { "path": "../schema" },
     { "path": "../runtime-registry" },
     { "path": "../capability-planner" }

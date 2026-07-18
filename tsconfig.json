@@ -1,6 +1,7 @@
 {
   "files": [],
   "references": [
+    { "path": "packages/adrasteia-adapter" },
     { "path": "packages/schema" },
     { "path": "packages/runtime-registry" },
     { "path": "packages/capability-planner" },

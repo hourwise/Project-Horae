@@ -6,9 +6,13 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run --root ../.."
   },
   "dependencies": {
+    "@horae/adrasteia-adapter": "0.1.0",
+    "@horae/ananke-binding": "0.1.0",
+    "@horae/mnemosyne-binding": "0.1.0",
     "@horae/runtime-core": "0.1.0"
+    ,"project-runtime-contracts": "https://github.com/hourwise/Project-Adrasteia/releases/download/adrasteia-adoption-v0.4.0-protocol-1.4.0/project-runtime-contracts-0.4.0.tgz"
   }
 }

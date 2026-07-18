@@ -4,6 +4,6 @@
     "rootDir": "src",
     "composite": true
   },
-  "references": [{ "path": "../runtime-core" }],
+  "references": [{ "path": "../adrasteia-adapter" }, { "path": "../ananke-binding" }, { "path": "../mnemosyne-binding" }, { "path": "../runtime-core" }],
   "include": ["src/**/*.ts"]
 }

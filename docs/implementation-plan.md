@@ -1,71 +1,19 @@
-# Project Horae Implementation Plan
+# Implementation Plan
 
-This plan records intended implementation work without treating planned behavior as already present in code.
+## Completed Stage-A adoption
 
-## Current Starting Point
+- Pin and verify immutable Project Adrasteia `project-runtime-contracts@0.4.0`.
+- Consume canonical runtime inspection, protocol, principal, scope, correlation and reference contracts through a pure adapter.
+- Replace exact `0.1.0` matching with canonical 1.0.0–1.4.0 semantic negotiation.
+- Separate peer-reported registration/health/readiness from Horae-local admission, lifecycle and observation freshness.
+- Require trusted dual-principal context, bounded scope, purpose and correlation for sessions.
+- Use UUID session/composition IDs and retain correlation as metadata only.
+- Implement inspection-only pinned Ananke and Mnemosyne bindings plus Horae inspection CLI evidence.
+- Add baseline, peer comparator, conformance, CLI and composition checks to CI.
 
-The current public code provides:
+## Deferred
 
-- public schema types for runtime registrations, health, lifecycle, capabilities, profiles, sessions, and events;
-- a runtime registry with lifecycle transitions, heartbeat recording, and stale-runtime degradation;
-- a capability planner that filters healthy runtime capabilities;
-- a session orchestrator that returns a session scaffold;
-- an in-memory audit router;
-- minimal `inspect()` bindings for Ananke, Mnemosyne, and gateway adapters.
-
-## Phase 1: Runtime Registry and Composition Validation
-
-Completed in the current implementation:
-
-- exact protocol compatibility checks for selected runtimes using `RuntimeIdentity.protocolVersion`;
-- typed rejection before session creation through `RuntimeProtocolCompatibilityError`;
-- typed rejection when multiple selected runtimes advertise the same capability ID;
-- a distinct `HoraeComposition` identity for each created session and `SessionOrchestrator.assessState()` for derived ready/degraded state.
-
-Planned work:
-
-- verify runtime identity beyond local registration presence;
-- validate profile fields against public types and supported values;
-- add explicit composition rejection for incompatible or missing required capabilities.
-
-## Phase 2: Governed Runtime Boundaries
-
-Planned work:
-
-- route policy and approval requests through Ananke-owned interfaces;
-- route qualified context retrieval through Mnemosyne-owned interfaces;
-- preserve the rule that Horae can request authority but cannot create it;
-- store references to runtime-owned audit rather than rewriting it.
-
-## Phase 3: Session-Level Supervision and Recovery
-
-Planned work:
-
-- define session-state transitions, degraded plans, and responses to runtime failure;
-- add task-level cancellation ownership and recovery semantics;
-- add durable correlation persistence if recovery requires it.
-
-## Phase 4: Data Boundaries, Providers, and Connectors
-
-Planned work:
-
-- encode data-boundary rules and explicit fallback behavior in public types;
-- model provider transport through a separate Model Broker boundary;
-- model typed external connectors and credential-broker boundaries;
-- reject unsupported boundary crossings before execution.
-
-## Phase 5: Content Surface Preflight
-
-Planned or proposed work:
-
-- implement the proposed Content Surface Preflight ADR if accepted;
-- add controlled projection and progressive disclosure for covered content-bearing operations;
-- fail closed on unsupported formats, timeout, or missing approval evidence.
-
-## Open Questions
-
-- whether memory is required for all task classes;
-- whether a recovered runtime keeps the same identity;
-- whether safe degraded mode is capability-specific or profile-specific or both;
-- whether composition identity survives recovery, restart, or degraded replanning;
-- how automatic restart should work for authority-bearing runtimes.
+- Ananke execution, approvals, grant verification and authority-bearing transport.
+- Mnemosyne memory/context transport, reliability evaluation or content exposure.
+- Provider/credential brokering, automatic startup/replan/recovery, durable orchestration storage and Moirae Code integration.
+- Shared content preflight; the proposal remains deferred until a cross-owner contract exists.

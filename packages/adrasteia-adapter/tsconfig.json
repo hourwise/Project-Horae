@@ -4,6 +4,5 @@
     "rootDir": "src",
     "composite": true
   },
-  "references": [{ "path": "../adrasteia-adapter" }, { "path": "../runtime-core" }],
   "include": ["src/**/*.ts"]
 }

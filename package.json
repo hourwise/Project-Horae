@@ -13,14 +13,25 @@
     "lint": "eslint packages --ext .ts",
     "format": "prettier --write .",
     "dev:cli": "npm run dev -w @horae/cli",
-    "test:bench": "npm run test -w @horae/testbench"
+    "test:bench": "npm run test -w @horae/testbench",
+    "verify:adrasteia": "node scripts/verify-adrasteia-baseline.mjs",
+    "test:adrasteia:conformance": "vitest run packages/testbench/src/adrasteia-adoption.test.ts",
+    "test:ananke:comparator": "node scripts/verify-peer-checkpoint.mjs ananke",
+    "test:mnemosyne:comparator": "node scripts/verify-peer-checkpoint.mjs mnemosyne",
+    "test:cli": "node scripts/cli-smoke.mjs",
+    "test:composition": "vitest run packages/testbench/src/adrasteia-adoption.test.ts",
+    "validate": "npm run verify:adrasteia && npm run build && npm run lint && npm test && npm run test:adrasteia:conformance && npm run test:ananke:comparator && npm run test:mnemosyne:comparator && npm run test:bench && npm run test:cli && npm run test:composition"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
     "eslint": "^9.0.0",
     "prettier": "^3.3.0",
     "tsx": "^4.19.0",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
+  },
+  "dependencies": {
+    "project-runtime-contracts": "https://github.com/hourwise/Project-Adrasteia/releases/download/adrasteia-adoption-v0.4.0-protocol-1.4.0/project-runtime-contracts-0.4.0.tgz"
   }
 }

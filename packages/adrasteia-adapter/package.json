@@ -1,5 +1,5 @@
 {
-  "name": "@horae/schema",
+  "name": "@horae/adrasteia-adapter",
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",
