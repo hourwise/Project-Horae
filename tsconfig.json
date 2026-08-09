@@ -10,6 +10,7 @@
     { "path": "packages/ananke-binding" },
     { "path": "packages/mnemosyne-binding" },
     { "path": "packages/gateway-adapter" },
+    { "path": "packages/slice02-relay" },
     { "path": "packages/audit-router" },
     { "path": "packages/runtime-core" },
     { "path": "packages/cli" },

@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "composite": true
+  },
+  "references": [
+    { "path": "../adrasteia-adapter" },
+    { "path": "../ananke-binding" },
+    { "path": "../capability-planner" },
+    { "path": "../runtime-registry" },
+    { "path": "../schema" }
+  ],
+  "include": ["src/**/*.ts"]
+}
