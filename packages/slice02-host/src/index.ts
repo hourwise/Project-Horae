@@ -1,14 +1,18 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   createSlice02Route,
+  DurableSlice02ReplayLedger,
   HttpSlice02AnankeBinding,
+  SLICE02_ROUTE_PATH,
+  slice02R1Audience,
   Slice02Relay,
   type Slice02RelayOptions,
 } from "@horae/slice02-relay";
 
-export const SLICE02_ROUTE_PATH = "/slice-02/governed-actions";
+export { SLICE02_ROUTE_PATH };
+
 const LOCAL_R1_BIND_HOST = "127.0.0.1";
 const DEFAULT_INSPECTION_TIMEOUT_MS = 1_000;
 const DEFAULT_DISPATCH_TIMEOUT_MS = 1_000;
@@ -25,7 +29,10 @@ export interface Slice02HostConfig {
   anankeEndpoint: string;
   expectedAnankeEndpoint: string;
   expectedAnankeInstanceId: string;
-  authorizationHeader?: string;
+  r1InstanceId: string;
+  r1Audience: string;
+  anankeExecutionToken: string;
+  replayLedgerPath: string;
   inspectionTimeoutMs: number;
   dispatchTimeoutMs: number;
 }
@@ -44,10 +51,9 @@ export function readSlice02HostConfig(env: NodeJS.ProcessEnv = process.env): Sli
     "EXPECTED_ANANKE_ENDPOINT",
   );
   const expectedAnankeInstanceId = required(env, "ANANKE_INSTANCE_ID");
-  const authorizationHeader = env.ANANKE_AUTHORIZATION_HEADER;
-  if (authorizationHeader !== undefined && authorizationHeader.length === 0) {
-    throw new TypeError("ANANKE_AUTHORIZATION_HEADER must not be empty when supplied");
-  }
+  const r1InstanceId = required(env, "HORAE_R1_INSTANCE_ID");
+  const anankeExecutionToken = requiredToken(env, "ANANKE_EXECUTION_TOKEN");
+  const replayLedgerPath = requiredAbsolutePath(env, "HORAE_R1_REPLAY_LEDGER_PATH");
 
   return {
     bindHost,
@@ -55,7 +61,10 @@ export function readSlice02HostConfig(env: NodeJS.ProcessEnv = process.env): Sli
     anankeEndpoint,
     expectedAnankeEndpoint,
     expectedAnankeInstanceId,
-    ...(authorizationHeader !== undefined ? { authorizationHeader } : {}),
+    r1InstanceId,
+    r1Audience: slice02R1Audience(r1InstanceId),
+    anankeExecutionToken,
+    replayLedgerPath,
     inspectionTimeoutMs: duration(
       env.HORAE_INSPECTION_TIMEOUT_MS ?? String(DEFAULT_INSPECTION_TIMEOUT_MS),
       "HORAE_INSPECTION_TIMEOUT_MS",
@@ -68,6 +77,12 @@ export function readSlice02HostConfig(env: NodeJS.ProcessEnv = process.env): Sli
 }
 
 export function createConfiguredSlice02Host(config: Slice02HostConfig): Server {
+  if (!config.anankeExecutionToken || /\s/.test(config.anankeExecutionToken)) {
+    throw new TypeError("ANANKE_EXECUTION_TOKEN must be a single raw token value");
+  }
+  if (config.r1Audience !== slice02R1Audience(config.r1InstanceId)) {
+    throw new TypeError("R1 Horae audience does not match the configured instance");
+  }
   const relayOptions: Slice02RelayOptions = {
     binding: new HttpSlice02AnankeBinding(config.anankeEndpoint),
     expectedAnanke: {
@@ -75,9 +90,12 @@ export function createConfiguredSlice02Host(config: Slice02HostConfig): Server {
       endpoint: config.expectedAnankeEndpoint,
     },
     expectedOrigin: EXPECTED_ORIGIN,
-    ...(config.authorizationHeader !== undefined
-      ? { authorizationHeader: config.authorizationHeader }
-      : {}),
+    authorizationHeader: () => `Bearer ${config.anankeExecutionToken}`,
+    requestIdentity: {
+      version: "r1-v2",
+      audience: config.r1Audience,
+      replayLedger: new DurableSlice02ReplayLedger(config.replayLedgerPath),
+    },
     inspectionTimeoutMs: config.inspectionTimeoutMs,
     timeoutMs: config.dispatchTimeoutMs,
   };
@@ -172,6 +190,20 @@ function writeJson(
 function required(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name];
   if (!value) throw new TypeError(`${name} is required`);
+  return value;
+}
+
+function requiredToken(env: NodeJS.ProcessEnv, name: string): string {
+  const value = required(env, name);
+  if (/\s/.test(value)) throw new TypeError(`${name} must be a single raw token value`);
+  return value;
+}
+
+function requiredAbsolutePath(env: NodeJS.ProcessEnv, name: string): string {
+  const value = required(env, name);
+  if (!isAbsolute(value)) {
+    throw new TypeError(`${name} must be an absolute path`);
+  }
   return value;
 }
 

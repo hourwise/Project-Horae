@@ -13,14 +13,32 @@ import {
 import { planCapabilities } from "@horae/capability-planner";
 import { RuntimeRegistry, type PeerRegistrationCandidate } from "@horae/runtime-registry";
 import type { Capability, PeerInspection, SupervisedRuntimeRegistration } from "@horae/schema";
+import type { Slice02ReplayLedger } from "./replay-ledger.js";
+
+export {
+  DEFAULT_R1_REPLAY_LEDGER_MAX_ENTRIES,
+  DurableSlice02ReplayLedger,
+} from "./replay-ledger.js";
+export type {
+  Slice02ReplayClaim,
+  Slice02ReplayIdentity,
+  Slice02ReplayLedger,
+} from "./replay-ledger.js";
 
 export const SLICE02_ACTION = "fates.slice02.inspect-fixed-fixture.v1";
+export const SLICE02_ROUTE_PATH = "/slice-02/governed-actions";
 export const SLICE02_FIXTURE_ID = "fates.slice02.fixed-fixture.v1";
 export const SLICE02_FIXTURE_SHA256 =
   "7b28f52d84b07bed8b49650960607e8f8a9809cac299810aba691f7f52fe9ae8";
 export const SLICE02_REQUEST_SCHEMA_ID = "urn:fates:slice02:inspect-fixed-fixture-request:v1";
 export const SLICE02_REQUEST_SCHEMA_SHA256 =
   "db1864fdc4978d6befb4b6d3913461e4f2d2732dd0ca87e076977ab98cf6049c";
+export const SLICE02_R1_REQUEST_SCHEMA_ID = "urn:fates:slice02:inspect-fixed-fixture-request:r1-v2";
+export const SLICE02_R1_REQUEST_SCHEMA_SHA256 =
+  "104ebc4267914426434968996b2ba2e774ad4ffd6bc2fb4c97b4193a1c7389db";
+export const SLICE02_R1_REQUEST_SCHEMA_DESCRIPTOR =
+  "fates-slice-003a-r1-request-receipt-v2|action=fates.slice02.inspect-fixed-fixture.v1|receipt=originId,originDigest,schemaId,schemaSha256,audience,validity.notBefore,validity.expiresAt";
+export const SLICE02_R1_AUDIENCE_PREFIX = "fates.slice03a.r1.horae:";
 
 export const SLICE02_ANANKE_PRODUCER = Object.freeze({
   repository: "https://github.com/hourwise/Project-Ananke",
@@ -31,11 +49,28 @@ export const SLICE02_ANANKE_PRODUCER = Object.freeze({
 
 const MAX_READINESS_AGE_MS = 1_000;
 const DEFAULT_TIMEOUT_MS = 1_000;
+const MAX_R1_VALIDITY_MS = 60_000;
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 const ACTION_ARGUMENT_KEYS = ["fixtureId", "expectedSha256"] as const;
 const ORIGIN_KEYS = ["runtime", "instanceId", "artifact", "receipt"] as const;
-const RECEIPT_KEYS = ["originDigest", "originId", "schemaId", "schemaSha256", "validity"] as const;
+const LEGACY_RECEIPT_KEYS = [
+  "originDigest",
+  "originId",
+  "schemaId",
+  "schemaSha256",
+  "validity",
+] as const;
+const R1_RECEIPT_KEYS = [
+  "audience",
+  "originDigest",
+  "originId",
+  "schemaId",
+  "schemaSha256",
+  "validity",
+] as const;
+
+export type Slice02RequestIdentityVersion = "legacy-v1" | "r1-v2";
 
 export type Slice02RouteState =
   | "completed"
@@ -60,13 +95,24 @@ export interface Slice02ValidityReceipt {
   expiresAt: string;
 }
 
-export interface Slice02RequestMetadata {
+export interface Slice02LegacyRequestMetadata {
   originId: string;
   originDigest: string;
   schemaId: typeof SLICE02_REQUEST_SCHEMA_ID;
   schemaSha256: typeof SLICE02_REQUEST_SCHEMA_SHA256;
   validity: Slice02ValidityReceipt;
 }
+
+export interface Slice02R1RequestMetadata {
+  originId: string;
+  originDigest: string;
+  schemaId: typeof SLICE02_R1_REQUEST_SCHEMA_ID;
+  schemaSha256: typeof SLICE02_R1_REQUEST_SCHEMA_SHA256;
+  audience: string;
+  validity: Slice02ValidityReceipt & { notBefore: string };
+}
+
+export type Slice02RequestMetadata = Slice02LegacyRequestMetadata | Slice02R1RequestMetadata;
 
 export interface Slice02Origin {
   runtime: string;
@@ -100,6 +146,12 @@ export interface Slice02ExpectedAnanke {
   producer?: typeof SLICE02_ANANKE_PRODUCER;
 }
 
+export interface Slice02R1RequestIdentityOptions {
+  version: "r1-v2";
+  audience: string;
+  replayLedger: Slice02ReplayLedger;
+}
+
 export interface Slice02RelayOptions {
   binding: Slice02AnankeBinding;
   expectedAnanke: Slice02ExpectedAnanke;
@@ -107,6 +159,7 @@ export interface Slice02RelayOptions {
   authorizationHeader?: string | (() => string | undefined);
   registry?: RuntimeRegistry;
   now?: () => number;
+  requestIdentity?: Slice02R1RequestIdentityOptions;
   inspectionTimeoutMs?: number;
   timeoutMs?: number;
 }
@@ -189,6 +242,16 @@ export interface Slice02AnankeResult {
   approvalRequired?: boolean;
   approvalGrantId?: string;
   evidence?: Record<string, unknown>;
+}
+
+class Slice02RequestError extends Error {
+  constructor(
+    readonly state: Slice02RouteState,
+    message: string,
+  ) {
+    super(message);
+    this.name = "Slice02RequestError";
+  }
 }
 
 /**
@@ -294,6 +357,9 @@ export class Slice02Relay {
     if (!options.expectedAnanke.instanceId || !options.expectedAnanke.endpoint) {
       throw new TypeError("Slice 02 requires a pinned Ananke instance and endpoint");
     }
+    if (options.requestIdentity && !isCanonicalR1Audience(options.requestIdentity.audience)) {
+      throw new TypeError("Slice 02 R1 audience is malformed");
+    }
   }
 
   /** Native Request/Response surface equivalent to POST /slice-02/governed-actions. */
@@ -323,8 +389,23 @@ export class Slice02Relay {
 
     let input: Slice02HandoffRequest;
     try {
-      input = parseRequest(await request.json(), this.options.expectedOrigin, this.now());
-    } catch {
+      input = parseRequest(
+        await request.json(),
+        this.options.expectedOrigin,
+        this.now(),
+        this.options.requestIdentity,
+      );
+    } catch (error) {
+      if (error instanceof Slice02RequestError) {
+        return this.respond({
+          state: error.state,
+          routeId,
+          eventId,
+          correlation: fallbackCorrelation(routeId),
+          dispatchState: "rejected_before_dispatch",
+          reason: error.message,
+        });
+      }
       return this.respond({
         state: "malformed",
         routeId,
@@ -349,6 +430,8 @@ export class Slice02Relay {
       correlation: input.correlation,
       dispatchState: "dispatch_not_attempted" as const,
     };
+    const identityRejection = this.claimApplicationIdentity(input);
+    if (identityRejection) return { ...base, ...identityRejection };
     const preDispatch = await this.inspectBeforeDispatch(input);
     if (preDispatch.kind === "timeout") {
       return {
@@ -445,6 +528,41 @@ export class Slice02Relay {
     };
   }
 
+  private claimApplicationIdentity(
+    input: Slice02HandoffRequest,
+  ): Pick<Slice02RouteResult, "state" | "reason" | "dispatchState"> | undefined {
+    const identityOptions = this.options.requestIdentity;
+    if (!identityOptions) return undefined;
+    const receipt = input.origin.receipt;
+    if (receipt.schemaId !== SLICE02_R1_REQUEST_SCHEMA_ID) {
+      return {
+        state: "malformed",
+        dispatchState: "rejected_before_dispatch",
+        reason: "R1 application request identity schema is required",
+      };
+    }
+    const claim = identityOptions.replayLedger.claim(
+      { originDigest: receipt.originDigest, expiresAt: receipt.validity.expiresAt },
+      this.now(),
+    );
+    if (claim.accepted) return undefined;
+    if (claim.reason === "replayed") {
+      return {
+        state: "denied",
+        dispatchState: "rejected_before_dispatch",
+        reason: "R1 application request identity was already consumed",
+      };
+    }
+    return {
+      state: "unavailable",
+      dispatchState: "rejected_before_dispatch",
+      reason:
+        claim.reason === "capacity"
+          ? "R1 application replay ledger capacity reached"
+          : "R1 application replay ledger unavailable",
+    };
+  }
+
   private async inspectBeforeDispatch(input: Slice02HandoffRequest): Promise<
     | {
         kind: "success";
@@ -508,7 +626,7 @@ export class Slice02Relay {
 
   private respond(result: Slice02RouteResult): Response {
     return new Response(JSON.stringify(result), {
-      status: routeStatus(result.state),
+      status: routeStatus(result.state, result.dispatchState),
       headers: { "content-type": "application/json" },
     });
   }
@@ -522,6 +640,7 @@ function parseRequest(
   value: unknown,
   expectedOrigin: Slice02ExpectedOrigin,
   nowMs: number,
+  identityOptions?: Slice02R1RequestIdentityOptions,
 ): Slice02HandoffRequest {
   const root = recordWithKeys(value, [
     "action",
@@ -549,7 +668,9 @@ function parseRequest(
   ) {
     throw new TypeError("unsupported origin identity");
   }
-  const receipt = parseReceipt(origin.receipt, nowMs);
+  const receipt = identityOptions
+    ? parseR1Receipt(origin.receipt, identityOptions.audience, nowMs)
+    : parseLegacyReceipt(origin.receipt, nowMs);
   if (typeof root.purpose !== "string" || root.purpose.trim().length === 0) {
     throw new TypeError("purpose is required");
   }
@@ -575,8 +696,8 @@ function parseRequest(
   };
 }
 
-function parseReceipt(value: unknown, nowMs: number): Slice02RequestMetadata {
-  const receipt = recordWithKeys(value, RECEIPT_KEYS);
+function parseLegacyReceipt(value: unknown, nowMs: number): Slice02LegacyRequestMetadata {
+  const receipt = recordWithKeys(value, LEGACY_RECEIPT_KEYS);
   if (
     typeof receipt.originId !== "string" ||
     !ID_PATTERN.test(receipt.originId) ||
@@ -585,23 +706,23 @@ function parseReceipt(value: unknown, nowMs: number): Slice02RequestMetadata {
     receipt.schemaId !== SLICE02_REQUEST_SCHEMA_ID ||
     receipt.schemaSha256 !== SLICE02_REQUEST_SCHEMA_SHA256
   )
-    throw new TypeError("malformed origin/schema receipt");
+    throw new Slice02RequestError("malformed", "malformed origin/schema receipt");
   const validity = recordWithKeys(receipt.validity, ["expiresAt", "notBefore"], true);
   if (typeof validity.expiresAt !== "string" || Number.isNaN(Date.parse(validity.expiresAt))) {
-    throw new TypeError("malformed validity");
+    throw new Slice02RequestError("malformed", "malformed validity");
   }
   if (
     validity.notBefore !== undefined &&
     (typeof validity.notBefore !== "string" || Number.isNaN(Date.parse(validity.notBefore)))
   ) {
-    throw new TypeError("malformed validity");
+    throw new Slice02RequestError("malformed", "malformed validity");
   }
   const notBefore = validity.notBefore as string | undefined;
   if ((notBefore && nowMs < Date.parse(notBefore)) || nowMs >= Date.parse(validity.expiresAt)) {
-    throw new TypeError("expired validity");
+    throw new Slice02RequestError("stale", "application request validity is not current");
   }
   if (receipt.originDigest !== slice02OriginDigest(receipt.originId)) {
-    throw new TypeError("origin digest does not match receipt");
+    throw new Slice02RequestError("malformed", "origin digest does not match receipt");
   }
   return {
     originId: receipt.originId,
@@ -615,12 +736,101 @@ function parseReceipt(value: unknown, nowMs: number): Slice02RequestMetadata {
   };
 }
 
+function parseR1Receipt(
+  value: unknown,
+  expectedAudience: string,
+  nowMs: number,
+): Slice02R1RequestMetadata {
+  const receipt = recordWithKeys(value, R1_RECEIPT_KEYS);
+  if (
+    typeof receipt.originId !== "string" ||
+    !ID_PATTERN.test(receipt.originId) ||
+    typeof receipt.originDigest !== "string" ||
+    !DIGEST_PATTERN.test(receipt.originDigest) ||
+    receipt.schemaId !== SLICE02_R1_REQUEST_SCHEMA_ID ||
+    receipt.schemaSha256 !== SLICE02_R1_REQUEST_SCHEMA_SHA256 ||
+    receipt.audience !== expectedAudience
+  ) {
+    throw new Slice02RequestError("malformed", "malformed R1 application request identity");
+  }
+  const validity = recordWithKeys(receipt.validity, ["expiresAt", "notBefore"]);
+  if (
+    typeof validity.notBefore !== "string" ||
+    Number.isNaN(Date.parse(validity.notBefore)) ||
+    typeof validity.expiresAt !== "string" ||
+    Number.isNaN(Date.parse(validity.expiresAt))
+  ) {
+    throw new Slice02RequestError("malformed", "malformed R1 application request validity");
+  }
+  const notBefore = Date.parse(validity.notBefore);
+  const expiresAt = Date.parse(validity.expiresAt);
+  if (
+    notBefore > nowMs ||
+    nowMs >= expiresAt ||
+    expiresAt <= notBefore ||
+    expiresAt - notBefore > MAX_R1_VALIDITY_MS
+  ) {
+    throw new Slice02RequestError("stale", "R1 application request validity is not current");
+  }
+  if (
+    receipt.originDigest !==
+    slice02R1OriginDigest({
+      originId: receipt.originId,
+      audience: receipt.audience,
+      validity: { notBefore: validity.notBefore, expiresAt: validity.expiresAt },
+    })
+  ) {
+    throw new Slice02RequestError("malformed", "R1 application request identity digest mismatch");
+  }
+  return {
+    originId: receipt.originId,
+    originDigest: receipt.originDigest,
+    schemaId: SLICE02_R1_REQUEST_SCHEMA_ID,
+    schemaSha256: SLICE02_R1_REQUEST_SCHEMA_SHA256,
+    audience: expectedAudience,
+    validity: { notBefore: validity.notBefore, expiresAt: validity.expiresAt },
+  };
+}
+
 export function slice02OriginDigest(originId: string): string {
   return hashCanonical({
     originId,
     schemaId: SLICE02_REQUEST_SCHEMA_ID,
     schemaSha256: SLICE02_REQUEST_SCHEMA_SHA256,
   });
+}
+
+export function slice02R1OriginDigest(input: {
+  originId: string;
+  audience: string;
+  validity: Slice02R1RequestMetadata["validity"];
+}): string {
+  return hashCanonical({
+    action: SLICE02_ACTION,
+    audience: input.audience,
+    originId: input.originId,
+    schemaId: SLICE02_R1_REQUEST_SCHEMA_ID,
+    schemaSha256: SLICE02_R1_REQUEST_SCHEMA_SHA256,
+    validity: input.validity,
+  });
+}
+
+export function slice02R1Audience(instanceId: string): string {
+  if (!ID_PATTERN.test(instanceId)) throw new TypeError("R1 Horae instance ID is malformed");
+  return `${SLICE02_R1_AUDIENCE_PREFIX}${instanceId}:POST:${SLICE02_ROUTE_PATH}`;
+}
+
+function isCanonicalR1Audience(value: string): boolean {
+  return (
+    value.startsWith(SLICE02_R1_AUDIENCE_PREFIX) &&
+    value.endsWith(`:POST:${SLICE02_ROUTE_PATH}`) &&
+    ID_PATTERN.test(
+      value.slice(
+        SLICE02_R1_AUDIENCE_PREFIX.length,
+        value.length - `:POST:${SLICE02_ROUTE_PATH}`.length,
+      ),
+    )
+  );
 }
 
 function validateAnankeInspection(
@@ -889,7 +1099,7 @@ function fallbackCorrelation(routeId: string): CorrelationContext {
   return { requestId: routeId, correlationId: routeId };
 }
 
-function routeStatus(state: Slice02RouteState): number {
+function routeStatus(state: Slice02RouteState, dispatchState?: Slice02DispatchState): number {
   switch (state) {
     case "malformed":
       return 400;
@@ -902,6 +1112,8 @@ function routeStatus(state: Slice02RouteState): number {
       return 504;
     case "indeterminate":
       return 502;
+    case "denied":
+      return dispatchState === "rejected_before_dispatch" ? 403 : 200;
     default:
       return 200;
   }

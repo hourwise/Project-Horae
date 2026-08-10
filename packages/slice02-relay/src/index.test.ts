@@ -1,4 +1,8 @@
+import { randomBytes } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createServer, type Server } from "node:http";
 import {
   parseCompatibilityManifest,
@@ -15,19 +19,26 @@ import {
   SLICE02_FIXTURE_SHA256,
   SLICE02_REQUEST_SCHEMA_ID,
   SLICE02_REQUEST_SCHEMA_SHA256,
+  SLICE02_R1_REQUEST_SCHEMA_ID,
+  SLICE02_R1_REQUEST_SCHEMA_SHA256,
   HttpSlice02AnankeBinding,
   Slice02Relay,
+  DurableSlice02ReplayLedger,
   type Slice02AnankeBinding,
   type Slice02DispatchInput,
   type Slice02DispatchResult,
   type Slice02RequestMetadata,
   type Slice02ToolMetadata,
   slice02OriginDigest,
+  slice02R1Audience,
+  slice02R1OriginDigest,
 } from "./index.js";
 
 const NOW = Date.parse("2026-08-09T16:00:00.000Z");
 const ENDPOINT = "http://ananke.test/api";
 const INSTANCE_ID = "ananke-instance-1";
+const TEST_ANANKE_TOKEN = randomBytes(32).toString("hex");
+const R1_AUDIENCE = slice02R1Audience("horae-r1-test");
 
 const ACTION: Slice02ToolMetadata = {
   name: SLICE02_ACTION,
@@ -189,12 +200,45 @@ function request(overrides: Record<string, unknown> = {}): Record<string, unknow
   };
 }
 
+function r1Request(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const originId = "moirae-r1-origin-slice02-1";
+  const validity = {
+    notBefore: "2026-08-09T15:59:30.000Z",
+    expiresAt: "2026-08-09T16:00:30.000Z",
+  };
+  return r1RequestWithIdentity({ originId, audience: R1_AUDIENCE, validity, overrides });
+}
+
+function r1RequestWithIdentity(input: {
+  originId: string;
+  audience: string;
+  validity: { notBefore: string; expiresAt: string };
+  overrides?: Record<string, unknown>;
+}): Record<string, unknown> {
+  return request({
+    ...input.overrides,
+    origin: {
+      runtime: "moirae-code",
+      instanceId: "moirae-instance-1",
+      artifact: "moirae-slice02-r1-host",
+      receipt: {
+        originId: input.originId,
+        originDigest: slice02R1OriginDigest(input),
+        schemaId: SLICE02_R1_REQUEST_SCHEMA_ID,
+        schemaSha256: SLICE02_R1_REQUEST_SCHEMA_SHA256,
+        audience: input.audience,
+        validity: input.validity,
+      },
+    },
+  });
+}
+
 class MockBinding implements Slice02AnankeBinding {
   inspectCalls = 0;
   actionCalls = 0;
   dispatchCalls = 0;
   lastDispatch?: Slice02DispatchInput;
-  result: Slice02DispatchResult = {
+  result: Slice02DispatchResult | Promise<Slice02DispatchResult> = {
     kind: "response",
     payload: {
       outcome: { state: "COMPLETED", data: "opaque producer data", retryable: false },
@@ -236,7 +280,7 @@ function relay(binding: MockBinding, now = NOW, inspectionTimeoutMs = 1_000): Sl
       artifact: "moirae-slice02-host-checkpoint",
     },
     expectedAnanke: { instanceId: INSTANCE_ID, endpoint: ENDPOINT },
-    authorizationHeader: "Bearer configured-workload-token",
+    authorizationHeader: `Bearer ${TEST_ANANKE_TOKEN}`,
     now: () => now,
     inspectionTimeoutMs,
   });
@@ -274,7 +318,7 @@ describe("Horae Slice 02 bounded relay", () => {
       purpose: "slice02.fixed-fixture-inspection",
       correlation: { requestId: "request-1", correlationId: "correlation-1" },
       adapterMetadata: metadata,
-      authorizationHeader: "Bearer configured-workload-token",
+      authorizationHeader: `Bearer ${TEST_ANANKE_TOKEN}`,
       timeoutMs: 1_000,
     };
 
@@ -282,7 +326,7 @@ describe("Horae Slice 02 bounded relay", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe(`${ENDPOINT}/api/execute`);
     expect(calls[0].init?.headers).toMatchObject({
-      authorization: "Bearer configured-workload-token",
+      authorization: `Bearer ${TEST_ANANKE_TOKEN}`,
       "x-ananke-correlation-id": "correlation-1",
     });
     expect(JSON.parse(calls[0].init?.body as string)).toEqual({
@@ -305,7 +349,7 @@ describe("Horae Slice 02 bounded relay", () => {
     expect(binding.lastDispatch).toMatchObject({
       arguments: { fixtureId: SLICE02_FIXTURE_ID, expectedSha256: SLICE02_FIXTURE_SHA256 },
       purpose: "slice02.fixed-fixture-inspection",
-      authorizationHeader: "Bearer configured-workload-token",
+      authorizationHeader: `Bearer ${TEST_ANANKE_TOKEN}`,
       adapterMetadata: { schemaId: SLICE02_REQUEST_SCHEMA_ID },
     });
     expect(result.body.routeId).not.toBe(result.body.eventId);
@@ -611,6 +655,172 @@ describe("Horae Slice 02 bounded relay", () => {
     expect(result.body.dispatchState).toBe("dispatch_not_attempted");
     expect(actionCalls).toBe(0);
     expect(dispatchCalls).toBe(0);
+  });
+
+  it("keeps host-owned Ananke authentication separate from caller headers", async () => {
+    const binding = new MockBinding();
+    const instance = relay(binding);
+    const response = await instance.handle(
+      new Request("http://horae.test/slice-02/governed-actions", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer caller-supplied-override",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(request()),
+      }),
+    );
+    const body = await response.text();
+
+    expect(binding.lastDispatch?.authorizationHeader).toBe(`Bearer ${TEST_ANANKE_TOKEN}`);
+    expect(body).not.toContain(TEST_ANANKE_TOKEN);
+    expect(body).not.toContain("caller-supplied-override");
+  });
+
+  it("accepts a current R1 identity once and preserves Ananke denial as authority", async () => {
+    const ledgerDirectory = mkdtempSync(join(tmpdir(), "fates-r1-ledger-"));
+    try {
+      const binding = new MockBinding();
+      binding.result = {
+        kind: "response",
+        payload: { outcome: { state: "DENIED", reasonCode: "PERMISSION_DENIED" } },
+      };
+      const instance = new Slice02Relay({
+        binding,
+        expectedOrigin: {
+          runtime: "moirae-code",
+          instanceId: "moirae-instance-1",
+          artifact: "moirae-slice02-r1-host",
+        },
+        expectedAnanke: { instanceId: INSTANCE_ID, endpoint: ENDPOINT },
+        authorizationHeader: `Bearer ${TEST_ANANKE_TOKEN}`,
+        requestIdentity: {
+          version: "r1-v2",
+          audience: R1_AUDIENCE,
+          replayLedger: new DurableSlice02ReplayLedger(join(ledgerDirectory, "consumed.json")),
+        },
+        now: () => NOW,
+      });
+
+      const result = await call(instance, r1Request());
+
+      expect(result.body.state).toBe("denied");
+      expect(result.body.dispatchState).toBe("result_received");
+      expect(binding.dispatchCalls).toBe(1);
+      expect(result.body.reason).toBeUndefined();
+    } finally {
+      rmSync(ledgerDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects expired, wrong-audience, malformed, and exact replay identities before dispatch", async () => {
+    const ledgerDirectory = mkdtempSync(join(tmpdir(), "fates-r1-ledger-"));
+    try {
+      const binding = new MockBinding();
+      const instance = new Slice02Relay({
+        binding,
+        expectedOrigin: {
+          runtime: "moirae-code",
+          instanceId: "moirae-instance-1",
+          artifact: "moirae-slice02-r1-host",
+        },
+        expectedAnanke: { instanceId: INSTANCE_ID, endpoint: ENDPOINT },
+        requestIdentity: {
+          version: "r1-v2",
+          audience: R1_AUDIENCE,
+          replayLedger: new DurableSlice02ReplayLedger(join(ledgerDirectory, "consumed.json")),
+        },
+        now: () => NOW,
+      });
+
+      const expired = await call(
+        instance,
+        r1RequestWithIdentity({
+          originId: "moirae-r1-expired",
+          audience: R1_AUDIENCE,
+          validity: {
+            notBefore: "2026-08-09T15:00:00.000Z",
+            expiresAt: "2026-08-09T15:59:59.000Z",
+          },
+        }),
+      );
+      const wrongAudience = await call(
+        instance,
+        r1RequestWithIdentity({
+          originId: "moirae-r1-wrong-audience",
+          audience: slice02R1Audience("another-horae"),
+          validity: {
+            notBefore: "2026-08-09T15:59:00.000Z",
+            expiresAt: "2026-08-09T16:00:30.000Z",
+          },
+        }),
+      );
+      const malformed = await call(
+        instance,
+        request({
+          origin: {
+            runtime: "moirae-code",
+            instanceId: "moirae-instance-1",
+            artifact: "moirae-slice02-r1-host",
+            receipt: { schemaId: "urn:fates:invalid" },
+          },
+        }),
+      );
+      const legacyWithoutR1 = await call(instance, request());
+      const first = await call(instance, r1Request());
+      const replay = await call(instance, r1Request());
+
+      expect(expired.body.state).toBe("stale");
+      expect(wrongAudience.body.state).toBe("malformed");
+      expect(malformed.body.state).toBe("malformed");
+      expect(legacyWithoutR1.body.state).toBe("malformed");
+      expect(first.body.dispatchState).toBe("result_received");
+      expect(replay.body.state).toBe("denied");
+      expect(replay.body.dispatchState).toBe("rejected_before_dispatch");
+      expect(binding.dispatchCalls).toBe(1);
+    } finally {
+      rmSync(ledgerDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("allows at most one progression for concurrent duplicate R1 requests", async () => {
+    const ledgerDirectory = mkdtempSync(join(tmpdir(), "fates-r1-ledger-"));
+    try {
+      const binding = new MockBinding();
+      binding.result = new Promise((resolve) =>
+        setTimeout(
+          () => resolve({ kind: "response", payload: { outcome: { state: "COMPLETED" } } }),
+          20,
+        ),
+      );
+      const instance = new Slice02Relay({
+        binding,
+        expectedOrigin: {
+          runtime: "moirae-code",
+          instanceId: "moirae-instance-1",
+          artifact: "moirae-slice02-r1-host",
+        },
+        expectedAnanke: { instanceId: INSTANCE_ID, endpoint: ENDPOINT },
+        requestIdentity: {
+          version: "r1-v2",
+          audience: R1_AUDIENCE,
+          replayLedger: new DurableSlice02ReplayLedger(join(ledgerDirectory, "consumed.json")),
+        },
+        now: () => NOW,
+      });
+
+      const results = await Promise.all([call(instance, r1Request()), call(instance, r1Request())]);
+
+      expect(
+        results.filter((result) => result.body.dispatchState === "result_received"),
+      ).toHaveLength(1);
+      expect(
+        results.filter((result) => result.body.dispatchState === "rejected_before_dispatch"),
+      ).toHaveLength(1);
+      expect(binding.dispatchCalls).toBe(1);
+    } finally {
+      rmSync(ledgerDirectory, { recursive: true, force: true });
+    }
   });
 });
 

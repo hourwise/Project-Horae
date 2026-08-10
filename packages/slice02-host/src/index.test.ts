@@ -1,4 +1,7 @@
+import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   createSlice02HostServer,
@@ -13,6 +16,9 @@ const VALID_ENV = {
   ANANKE_ENDPOINT: "http://127.0.0.1:34102",
   EXPECTED_ANANKE_ENDPOINT: "http://127.0.0.1:34102/api",
   ANANKE_INSTANCE_ID: "ananke-instance-1",
+  HORAE_R1_INSTANCE_ID: "horae-r1-test",
+  ANANKE_EXECUTION_TOKEN: randomBytes(32).toString("hex"),
+  HORAE_R1_REPLAY_LEDGER_PATH: join(tmpdir(), `fates-r1-replay-${randomUUID()}.json`),
 };
 
 async function listen(server: Server): Promise<number> {
@@ -40,6 +46,8 @@ describe("tracked Slice 02 Horae host", () => {
       port: 34104,
       anankeEndpoint: "http://127.0.0.1:34102",
       expectedAnankeEndpoint: "http://127.0.0.1:34102/api",
+      r1InstanceId: "horae-r1-test",
+      r1Audience: "fates.slice03a.r1.horae:horae-r1-test:POST:/slice-02/governed-actions",
     });
     expect(() => readSlice02HostConfig({ ...VALID_ENV, HORAE_BIND_HOST: "0.0.0.0" })).toThrow(
       "HORAE_BIND_HOST",
@@ -50,6 +58,16 @@ describe("tracked Slice 02 Horae host", () => {
     expect(() => readSlice02HostConfig({ ...VALID_ENV, ANANKE_ENDPOINT: "not-a-url" })).toThrow(
       "ANANKE_ENDPOINT",
     );
+    expect(() => {
+      const { ANANKE_EXECUTION_TOKEN: _token, ...missing } = VALID_ENV;
+      readSlice02HostConfig(missing);
+    }).toThrow("ANANKE_EXECUTION_TOKEN");
+    expect(() =>
+      readSlice02HostConfig({ ...VALID_ENV, ANANKE_EXECUTION_TOKEN: "token with spaces" }),
+    ).toThrow("single raw token");
+    expect(() =>
+      readSlice02HostConfig({ ...VALID_ENV, HORAE_R1_REPLAY_LEDGER_PATH: "relative-ledger.json" }),
+    ).toThrow("absolute path");
     expect(() =>
       readSlice02HostConfig({ ...VALID_ENV, ANANKE_ENDPOINT: "http://user:pass@127.0.0.1" }),
     ).toThrow("ANANKE_ENDPOINT");
