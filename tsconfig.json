@@ -11,6 +11,7 @@
     { "path": "packages/mnemosyne-binding" },
     { "path": "packages/gateway-adapter" },
     { "path": "packages/slice02-relay" },
+    { "path": "packages/slice02-host" },
     { "path": "packages/audit-router" },
     { "path": "packages/runtime-core" },
     { "path": "packages/cli" },

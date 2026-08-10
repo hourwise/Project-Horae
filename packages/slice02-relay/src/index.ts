@@ -12,18 +12,13 @@ import {
 } from "@horae/adrasteia-adapter";
 import { planCapabilities } from "@horae/capability-planner";
 import { RuntimeRegistry, type PeerRegistrationCandidate } from "@horae/runtime-registry";
-import type {
-  Capability,
-  PeerInspection,
-  SupervisedRuntimeRegistration,
-} from "@horae/schema";
+import type { Capability, PeerInspection, SupervisedRuntimeRegistration } from "@horae/schema";
 
 export const SLICE02_ACTION = "fates.slice02.inspect-fixed-fixture.v1";
 export const SLICE02_FIXTURE_ID = "fates.slice02.fixed-fixture.v1";
 export const SLICE02_FIXTURE_SHA256 =
   "7b28f52d84b07bed8b49650960607e8f8a9809cac299810aba691f7f52fe9ae8";
-export const SLICE02_REQUEST_SCHEMA_ID =
-  "urn:fates:slice02:inspect-fixed-fixture-request:v1";
+export const SLICE02_REQUEST_SCHEMA_ID = "urn:fates:slice02:inspect-fixed-fixture-request:v1";
 export const SLICE02_REQUEST_SCHEMA_SHA256 =
   "db1864fdc4978d6befb4b6d3913461e4f2d2732dd0ca87e076977ab98cf6049c";
 
@@ -112,6 +107,7 @@ export interface Slice02RelayOptions {
   authorizationHeader?: string | (() => string | undefined);
   registry?: RuntimeRegistry;
   now?: () => number;
+  inspectionTimeoutMs?: number;
   timeoutMs?: number;
 }
 
@@ -144,7 +140,7 @@ export interface Slice02RouteResult {
   correlation: CorrelationContext;
   dispatchState: Slice02DispatchState;
   receipt?: Slice02RouteReceipt;
-  ananke?: unknown;
+  ananke?: Slice02AnankeResult;
   producerEvidence?: Record<string, unknown>;
   reason?: string;
 }
@@ -168,14 +164,31 @@ export interface Slice02DispatchInput {
 }
 
 export type Slice02DispatchResult =
-  | { kind: "response"; payload: unknown }
-  | { kind: "timeout" }
-  | { kind: "transport" };
+  { kind: "response"; payload: unknown } | { kind: "timeout" } | { kind: "transport" };
 
 export interface Slice02AnankeBinding {
-  inspect(): Promise<PeerInspection>;
-  inspectAction(): Promise<Slice02ToolMetadata>;
+  inspect(signal?: AbortSignal): Promise<PeerInspection>;
+  inspectAction(signal?: AbortSignal): Promise<Slice02ToolMetadata>;
   dispatch(input: Slice02DispatchInput): Promise<Slice02DispatchResult>;
+}
+
+export interface Slice02AnankeOutcome {
+  state: string;
+  reasonCode?: string;
+  retryable?: boolean;
+  requiresUser?: boolean;
+  safeToContinue?: boolean;
+  nextAction?: string;
+  data?: unknown;
+  error?: string;
+}
+
+/** The allowlisted GatewayExecutionResult fields understood by this relay. */
+export interface Slice02AnankeResult {
+  outcome: Slice02AnankeOutcome;
+  approvalRequired?: boolean;
+  approvalGrantId?: string;
+  evidence?: Record<string, unknown>;
 }
 
 /**
@@ -194,14 +207,18 @@ export class HttpSlice02AnankeBinding implements Slice02AnankeBinding {
     this.inspection = new HttpAnankeInspectionBinding(this.baseUrl, request);
   }
 
-  inspect(): Promise<PeerInspection> {
-    return this.inspection.inspect();
+  inspect(signal?: AbortSignal): Promise<PeerInspection> {
+    return this.inspection.inspect(signal);
   }
 
-  async inspectAction(): Promise<Slice02ToolMetadata> {
+  async inspectAction(signal?: AbortSignal): Promise<Slice02ToolMetadata> {
     const response = await this.request(
       `${this.baseUrl}/api/tools/${encodeURIComponent(SLICE02_ACTION)}`,
-      { method: "GET", headers: { accept: "application/json" } },
+      {
+        method: "GET",
+        headers: { accept: "application/json" },
+        ...(signal ? { signal } : {}),
+      },
     );
     if (!response.ok) throw new Error("Slice 02 action inspection unavailable");
     return (await response.json()) as Slice02ToolMetadata;
@@ -252,6 +269,7 @@ export class HttpSlice02AnankeBinding implements Slice02AnankeBinding {
       return await Promise.race([requestPromise, timeoutPromise]);
     } finally {
       if (timer) clearTimeout(timer);
+      controller.abort();
     }
   }
 }
@@ -259,12 +277,17 @@ export class HttpSlice02AnankeBinding implements Slice02AnankeBinding {
 export class Slice02Relay {
   private readonly registry: RuntimeRegistry;
   private readonly now: () => number;
+  private readonly inspectionTimeoutMs: number;
   private readonly timeoutMs: number;
 
   constructor(private readonly options: Slice02RelayOptions) {
     this.registry = options.registry ?? new RuntimeRegistry();
     this.now = options.now ?? (() => Date.now());
+    this.inspectionTimeoutMs = options.inspectionTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    if (!Number.isSafeInteger(this.inspectionTimeoutMs) || this.inspectionTimeoutMs <= 0) {
+      throw new TypeError("Slice 02 inspectionTimeoutMs must be a positive safe integer");
+    }
     if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs <= 0) {
       throw new TypeError("Slice 02 timeoutMs must be a positive safe integer");
     }
@@ -326,43 +349,16 @@ export class Slice02Relay {
       correlation: input.correlation,
       dispatchState: "dispatch_not_attempted" as const,
     };
-    let inspection: PeerInspection;
-    let admission: SupervisedRuntimeRegistration;
-    let action: Slice02ToolMetadata;
-    try {
-      // This is intentionally performed on every request immediately before
-      // the action endpoint is inspected or dispatched.
-      inspection = await this.options.binding.inspect();
-      admission = this.registry.admit({
-        id: "ananke-slice02",
-        registration: inspection.registration,
-        compatibility: inspection.compatibility,
-        source: "ananke-public-http-inspection",
-        observedAt: new Date(this.now()).toISOString(),
-      });
-      const admissionFailure = admissionFailureState(admission);
-      if (admissionFailure) return { ...base, ...admissionFailure };
-
-      const reinspectionFailure = validateAnankeInspection(
-        inspection,
-        this.options.expectedAnanke,
-        this.now(),
-      );
-      if (reinspectionFailure) return { ...base, ...reinspectionFailure };
-
-      action = await this.options.binding.inspectAction();
-      const actionFailure = validateSlice02Action(action);
-      if (actionFailure) return { ...base, ...actionFailure };
-      const capabilityFailure = validateReducedActionCapability(input, admission, action);
-      if (capabilityFailure) return { ...base, ...capabilityFailure };
-    } catch {
+    const preDispatch = await this.inspectBeforeDispatch(input);
+    if (preDispatch.kind === "timeout") {
       return {
         ...base,
-        state: "unavailable",
-        dispatchState: "dispatch_not_attempted",
-        reason: "Ananke inspection unavailable",
+        state: "timed_out",
+        reason: "Ananke pre-dispatch inspection timed out",
       };
     }
+    if (preDispatch.kind === "failure") return { ...base, ...preDispatch.result };
+    const { inspection, admission, action } = preDispatch;
 
     const negotiatedProtocol = negotiateWithHorae(
       inspection.identity.protocolVersion,
@@ -396,9 +392,10 @@ export class Slice02Relay {
       },
     };
 
-    const authorizationHeader = typeof this.options.authorizationHeader === "function"
-      ? this.options.authorizationHeader()
-      : this.options.authorizationHeader;
+    const authorizationHeader =
+      typeof this.options.authorizationHeader === "function"
+        ? this.options.authorizationHeader()
+        : this.options.authorizationHeader;
     const dispatch = await this.options.binding.dispatch({
       arguments: input.arguments,
       purpose: input.purpose,
@@ -448,6 +445,67 @@ export class Slice02Relay {
     };
   }
 
+  private async inspectBeforeDispatch(input: Slice02HandoffRequest): Promise<
+    | {
+        kind: "success";
+        inspection: PeerInspection;
+        admission: SupervisedRuntimeRegistration;
+        action: Slice02ToolMetadata;
+      }
+    | { kind: "timeout" }
+    | { kind: "failure"; result: Pick<Slice02RouteResult, "state" | "reason"> }
+  > {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const inspectionPromise = (async () => {
+      // This is intentionally performed on every request immediately before
+      // the action endpoint is inspected or dispatched.
+      const inspection = await this.options.binding.inspect(controller.signal);
+      throwIfAborted(controller.signal);
+      const admission = this.registry.admit({
+        id: "ananke-slice02",
+        registration: inspection.registration,
+        compatibility: inspection.compatibility,
+        source: "ananke-public-http-inspection",
+        observedAt: new Date(this.now()).toISOString(),
+      });
+      const admissionFailure = admissionFailureState(admission);
+      if (admissionFailure) return { kind: "failure" as const, result: admissionFailure };
+
+      const reinspectionFailure = validateAnankeInspection(
+        inspection,
+        this.options.expectedAnanke,
+        this.now(),
+      );
+      if (reinspectionFailure) return { kind: "failure" as const, result: reinspectionFailure };
+
+      const action = await this.options.binding.inspectAction(controller.signal);
+      throwIfAborted(controller.signal);
+      const actionFailure = validateSlice02Action(action);
+      if (actionFailure) return { kind: "failure" as const, result: actionFailure };
+      const capabilityFailure = validateReducedActionCapability(input, admission, action);
+      if (capabilityFailure) return { kind: "failure" as const, result: capabilityFailure };
+      return { kind: "success" as const, inspection, admission, action };
+    })();
+    const timeoutPromise = new Promise<{ kind: "timeout" }>((resolve) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        resolve({ kind: "timeout" });
+      }, this.inspectionTimeoutMs);
+    });
+
+    try {
+      return await Promise.race([inspectionPromise, timeoutPromise]);
+    } catch {
+      return {
+        kind: "failure",
+        result: { state: "unavailable", reason: "Ananke inspection unavailable" },
+      };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   private respond(result: Slice02RouteResult): Response {
     return new Response(JSON.stringify(result), {
       status: routeStatus(result.state),
@@ -465,10 +523,22 @@ function parseRequest(
   expectedOrigin: Slice02ExpectedOrigin,
   nowMs: number,
 ): Slice02HandoffRequest {
-  const root = recordWithKeys(value, ["action", "arguments", "origin", "execution", "scope", "purpose", "correlation"]);
+  const root = recordWithKeys(value, [
+    "action",
+    "arguments",
+    "origin",
+    "execution",
+    "scope",
+    "purpose",
+    "correlation",
+  ]);
   if (root.action !== SLICE02_ACTION) throw new TypeError("unsupported action");
   const args = recordWithKeys(root.arguments, ACTION_ARGUMENT_KEYS);
-  if (args.fixtureId !== SLICE02_FIXTURE_ID || typeof args.expectedSha256 !== "string" || !DIGEST_PATTERN.test(args.expectedSha256)) {
+  if (
+    args.fixtureId !== SLICE02_FIXTURE_ID ||
+    typeof args.expectedSha256 !== "string" ||
+    !DIGEST_PATTERN.test(args.expectedSha256)
+  ) {
     throw new TypeError("malformed Slice 02 arguments");
   }
   const origin = recordWithKeys(root.origin, ORIGIN_KEYS);
@@ -514,12 +584,16 @@ function parseReceipt(value: unknown, nowMs: number): Slice02RequestMetadata {
     !DIGEST_PATTERN.test(receipt.originDigest) ||
     receipt.schemaId !== SLICE02_REQUEST_SCHEMA_ID ||
     receipt.schemaSha256 !== SLICE02_REQUEST_SCHEMA_SHA256
-  ) throw new TypeError("malformed origin/schema receipt");
+  )
+    throw new TypeError("malformed origin/schema receipt");
   const validity = recordWithKeys(receipt.validity, ["expiresAt", "notBefore"], true);
   if (typeof validity.expiresAt !== "string" || Number.isNaN(Date.parse(validity.expiresAt))) {
     throw new TypeError("malformed validity");
   }
-  if (validity.notBefore !== undefined && (typeof validity.notBefore !== "string" || Number.isNaN(Date.parse(validity.notBefore)))) {
+  if (
+    validity.notBefore !== undefined &&
+    (typeof validity.notBefore !== "string" || Number.isNaN(Date.parse(validity.notBefore)))
+  ) {
     throw new TypeError("malformed validity");
   }
   const notBefore = validity.notBefore as string | undefined;
@@ -554,7 +628,10 @@ function validateAnankeInspection(
   expected: Slice02ExpectedAnanke,
   nowMs: number,
 ): Pick<Slice02RouteResult, "state" | "reason"> | undefined {
-  if (inspection.identity.runtime !== "ananke" || inspection.identity.instanceId !== expected.instanceId) {
+  if (
+    inspection.identity.runtime !== "ananke" ||
+    inspection.identity.instanceId !== expected.instanceId
+  ) {
     return { state: "incompatible", reason: "Ananke identity drifted" };
   }
   if (inspection.compatibility.runtimeName !== "ananke") {
@@ -564,7 +641,8 @@ function validateAnankeInspection(
     inspection.compatibility.protocolVersion,
     inspection.compatibility.minimumSupportedProtocolVersion,
   );
-  if (!negotiation.compatible) return { state: "incompatible", reason: "Ananke protocol is incompatible" };
+  if (!negotiation.compatible)
+    return { state: "incompatible", reason: "Ananke protocol is incompatible" };
   const endpoint = inspection.registration.endpoints?.find(
     (candidate) => candidate.transport === "http" && candidate.url === expected.endpoint,
   );
@@ -576,7 +654,8 @@ function validateAnankeInspection(
     return { state: "unavailable", reason: "Ananke dependency is not ready" };
   }
   const checkedAt = inspection.readiness.checkedAt;
-  if (!checkedAt || Number.isNaN(Date.parse(checkedAt))) return { state: "stale", reason: "Ananke readiness timestamp is invalid" };
+  if (!checkedAt || Number.isNaN(Date.parse(checkedAt)))
+    return { state: "stale", reason: "Ananke readiness timestamp is invalid" };
   const ageMs = Math.max(0, nowMs - Date.parse(checkedAt));
   if (ageMs > MAX_READINESS_AGE_MS) return { state: "stale", reason: "Ananke readiness is stale" };
   const annotations = inspection.identity.metadata?.annotations;
@@ -586,7 +665,8 @@ function validateAnankeInspection(
     annotations?.["fates.slice02.producerCheckpoint"] !== expectedProducer.checkpoint ||
     annotations?.["fates.slice02.producerTag"] !== expectedProducer.tag ||
     annotations?.["fates.slice02.implementationCommit"] !== expectedProducer.implementationCommit
-  ) return { state: "incompatible", reason: "Ananke producer authority drifted" };
+  )
+    return { state: "incompatible", reason: "Ananke producer authority drifted" };
   return undefined;
 }
 
@@ -612,7 +692,8 @@ function validateSlice02Action(
     properties.fixtureId.const !== SLICE02_FIXTURE_ID ||
     !isRecord(properties.expectedSha256) ||
     properties.expectedSha256.pattern !== "^[0-9a-f]{64}$"
-  ) return { state: "incompatible", reason: "Slice 02 action capability drifted" };
+  )
+    return { state: "incompatible", reason: "Slice 02 action capability drifted" };
   return undefined;
 }
 
@@ -668,31 +749,103 @@ function validateReducedActionCapability(
 function admissionFailureState(
   admission: SupervisedRuntimeRegistration,
 ): Pick<Slice02RouteResult, "state" | "reason"> | undefined {
-  if (admission.admission.state === "admitted" || admission.admission.state === "constrained") return undefined;
-  if (admission.admission.state === "incompatible" || admission.admission.state === "identity_mismatch") {
+  if (admission.admission.state === "admitted" || admission.admission.state === "constrained")
+    return undefined;
+  if (
+    admission.admission.state === "incompatible" ||
+    admission.admission.state === "identity_mismatch"
+  ) {
     return { state: "incompatible", reason: "Ananke admission evidence is incompatible" };
   }
   return { state: "unavailable", reason: "Ananke admission is incomplete" };
 }
 
-function producerAttestation(inspection: PeerInspection): typeof SLICE02_ANANKE_PRODUCER | undefined {
+function producerAttestation(
+  inspection: PeerInspection,
+): typeof SLICE02_ANANKE_PRODUCER | undefined {
   const annotations = inspection.identity.metadata?.annotations;
   if (
     annotations?.["fates.slice02.producerRepository"] !== SLICE02_ANANKE_PRODUCER.repository ||
     annotations?.["fates.slice02.producerCheckpoint"] !== SLICE02_ANANKE_PRODUCER.checkpoint ||
     annotations?.["fates.slice02.producerTag"] !== SLICE02_ANANKE_PRODUCER.tag ||
-    annotations?.["fates.slice02.implementationCommit"] !== SLICE02_ANANKE_PRODUCER.implementationCommit
-  ) return undefined;
+    annotations?.["fates.slice02.implementationCommit"] !==
+      SLICE02_ANANKE_PRODUCER.implementationCommit
+  )
+    return undefined;
   return SLICE02_ANANKE_PRODUCER;
 }
 
-function parseAnankeResult(value: unknown): { outcome: { state: string }; evidence?: Record<string, unknown> } | undefined {
-  if (!isRecord(value) || !isRecord(value.outcome) || typeof value.outcome.state !== "string") return undefined;
-  return {
-    outcome: { state: value.outcome.state },
-    ...(isRecord(value.evidence) ? { evidence: value.evidence } : {}),
-    ...value,
-  } as { outcome: { state: string }; evidence?: Record<string, unknown> };
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw new Error("Ananke pre-dispatch inspection aborted");
+}
+
+export function parseAnankeResult(value: unknown): Slice02AnankeResult | undefined {
+  if (!isRecord(value) || !Object.hasOwn(value, "outcome")) return undefined;
+  const outcome = parseAnankeOutcome(value.outcome);
+  if (!outcome) return undefined;
+  const result: Slice02AnankeResult = { outcome };
+  if (Object.hasOwn(value, "approvalRequired")) {
+    if (typeof value.approvalRequired !== "boolean") return undefined;
+    result.approvalRequired = value.approvalRequired;
+  }
+  if (Object.hasOwn(value, "approvalGrantId")) {
+    if (typeof value.approvalGrantId !== "string") return undefined;
+    result.approvalGrantId = value.approvalGrantId;
+  }
+  if (Object.hasOwn(value, "evidence")) {
+    if (!isRecord(value.evidence)) return undefined;
+    result.evidence = cloneRecord(value.evidence);
+  }
+  return result;
+}
+
+function parseAnankeOutcome(value: unknown): Slice02AnankeOutcome | undefined {
+  if (!isRecord(value) || !Object.hasOwn(value, "state") || typeof value.state !== "string")
+    return undefined;
+  const outcome: Slice02AnankeOutcome = { state: value.state };
+  const stringKeys = ["reasonCode", "nextAction", "error"] as const;
+  for (const key of stringKeys) {
+    if (Object.hasOwn(value, key)) {
+      if (typeof value[key] !== "string") return undefined;
+      outcome[key] = value[key] as string;
+    }
+  }
+  const booleanKeys = ["retryable", "requiresUser", "safeToContinue"] as const;
+  for (const key of booleanKeys) {
+    if (Object.hasOwn(value, key)) {
+      if (typeof value[key] !== "boolean") return undefined;
+      outcome[key] = value[key] as boolean;
+    }
+  }
+  if (Object.hasOwn(value, "data")) outcome.data = cloneJsonValue(value.data);
+  return outcome;
+}
+
+function cloneRecord(value: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const key of Object.keys(value)) {
+    Object.defineProperty(result, key, {
+      configurable: true,
+      enumerable: true,
+      value: cloneJsonValue(value[key]),
+      writable: true,
+    });
+  }
+  return result;
+}
+
+function cloneJsonValue(value: unknown): unknown {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    typeof value === "number"
+  ) {
+    return value;
+  }
+  if (Array.isArray(value)) return value.map((item) => cloneJsonValue(item));
+  if (isRecord(value)) return cloneRecord(value);
+  return undefined;
 }
 
 function recordWithKeys(
@@ -720,10 +873,14 @@ function hashCanonical(value: Record<string, unknown>): string {
 
 function canonicalJson(value: unknown): string {
   if (value === null) return "null";
-  if (typeof value === "string" || typeof value === "boolean" || typeof value === "number") return JSON.stringify(value);
+  if (typeof value === "string" || typeof value === "boolean" || typeof value === "number")
+    return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (isRecord(value)) {
-    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(",")}}`;
   }
   throw new TypeError("unsupported canonical value");
 }
@@ -734,12 +891,18 @@ function fallbackCorrelation(routeId: string): CorrelationContext {
 
 function routeStatus(state: Slice02RouteState): number {
   switch (state) {
-    case "malformed": return 400;
-    case "incompatible": return 409;
+    case "malformed":
+      return 400;
+    case "incompatible":
+      return 409;
     case "unavailable":
-    case "stale": return 503;
-    case "timed_out": return 504;
-    case "indeterminate": return 502;
-    default: return 200;
+    case "stale":
+      return 503;
+    case "timed_out":
+      return 504;
+    case "indeterminate":
+      return 502;
+    default:
+      return 200;
   }
 }

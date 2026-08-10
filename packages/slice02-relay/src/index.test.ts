@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createServer, type Server } from "node:http";
 import {
   parseCompatibilityManifest,
   parseRuntimeHealth,
@@ -45,16 +46,18 @@ const ACTION: Slice02ToolMetadata = {
   },
 };
 
-function inspection(overrides: {
-  ready?: boolean;
-  healthy?: boolean;
-  checkedAt?: string;
-  endpoint?: string;
-  instanceId?: string;
-  protocolVersion?: string;
-  minimumProtocolVersion?: string;
-  action?: Slice02ToolMetadata;
-} = {}): PeerInspection {
+function inspection(
+  overrides: {
+    ready?: boolean;
+    healthy?: boolean;
+    checkedAt?: string;
+    endpoint?: string;
+    instanceId?: string;
+    protocolVersion?: string;
+    minimumProtocolVersion?: string;
+    action?: Slice02ToolMetadata;
+  } = {},
+): PeerInspection {
   const protocolVersion = overrides.protocolVersion ?? "1.4.0";
   const minimumProtocolVersion = overrides.minimumProtocolVersion ?? "1.0.0";
   const checkedAt = overrides.checkedAt ?? new Date(NOW).toISOString();
@@ -95,8 +98,16 @@ function inspection(overrides: {
     status: ready ? "ready" : "not_ready",
     checkedAt,
     dependencies: [
-      { dependencyId: "runtime-initialisation", status: ready ? "ready" : "not_ready", required: true },
-      { dependencyId: "registered-tool-executors", status: ready ? "ready" : "not_ready", required: true },
+      {
+        dependencyId: "runtime-initialisation",
+        status: ready ? "ready" : "not_ready",
+        required: true,
+      },
+      {
+        dependencyId: "registered-tool-executors",
+        status: ready ? "ready" : "not_ready",
+        required: true,
+      },
     ],
   });
   const registration = parseRuntimeRegistration({
@@ -216,7 +227,7 @@ class MockBinding implements Slice02AnankeBinding {
   }
 }
 
-function relay(binding: MockBinding, now = NOW): Slice02Relay {
+function relay(binding: MockBinding, now = NOW, inspectionTimeoutMs = 1_000): Slice02Relay {
   return new Slice02Relay({
     binding,
     expectedOrigin: {
@@ -227,15 +238,21 @@ function relay(binding: MockBinding, now = NOW): Slice02Relay {
     expectedAnanke: { instanceId: INSTANCE_ID, endpoint: ENDPOINT },
     authorizationHeader: "Bearer configured-workload-token",
     now: () => now,
+    inspectionTimeoutMs,
   });
 }
 
-async function call(relayInstance: Slice02Relay, body: unknown): Promise<{ status: number; body: Record<string, unknown> }> {
-  const response = await relayInstance.handle(new Request("http://horae.test/slice-02/governed-actions", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  }));
+async function call(
+  relayInstance: Slice02Relay,
+  body: unknown,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const response = await relayInstance.handle(
+    new Request("http://horae.test/slice-02/governed-actions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
   return { status: response.status, body: (await response.json()) as Record<string, unknown> };
 }
 
@@ -292,7 +309,10 @@ describe("Horae Slice 02 bounded relay", () => {
       adapterMetadata: { schemaId: SLICE02_REQUEST_SCHEMA_ID },
     });
     expect(result.body.routeId).not.toBe(result.body.eventId);
-    expect(result.body.correlation).toEqual({ requestId: "request-1", correlationId: "correlation-1" });
+    expect(result.body.correlation).toEqual({
+      requestId: "request-1",
+      correlationId: "correlation-1",
+    });
     expect((result.body.ananke as Record<string, unknown>).evidence).toMatchObject({
       decisionId: "ananke-decision-1",
       outcomeId: "ananke-outcome-1",
@@ -317,14 +337,77 @@ describe("Horae Slice 02 bounded relay", () => {
       state: "DENIED",
       reasonCode: "POLICY_DENIED",
     });
-    expect(result.body.producerEvidence).toEqual({ decisionId: "denied-decision", readAttemptCount: 0 });
+    expect(result.body.producerEvidence).toEqual({
+      decisionId: "denied-decision",
+      readAttemptCount: 0,
+    });
+  });
+
+  it("projects only the canonical Ananke result fields and strips forged or inherited fields", async () => {
+    const binding = new MockBinding();
+    const evidence = Object.create({ inheritedEvidence: "drop" }) as Record<string, unknown>;
+    evidence.readAttemptCount = 1;
+    evidence.nested = { allowedEvidence: true };
+    const outcome = Object.create({ inheritedOutcome: "drop" }) as Record<string, unknown>;
+    outcome.state = "COMPLETED";
+    outcome.retryable = false;
+    outcome.data = { nested: { allowedData: true } };
+    outcome.forgedReplacement = "drop";
+    binding.result = {
+      kind: "response",
+      payload: {
+        outcome,
+        evidence,
+        approvalRequired: false,
+        approvalGrantId: "grant-1",
+        unexpectedTopLevel: "drop",
+      },
+    };
+
+    const result = await call(relay(binding), request());
+    const ananke = result.body.ananke as Record<string, unknown>;
+
+    expect(ananke).toEqual({
+      outcome: {
+        state: "COMPLETED",
+        retryable: false,
+        data: { nested: { allowedData: true } },
+      },
+      evidence: {
+        readAttemptCount: 1,
+        nested: { allowedEvidence: true },
+      },
+      approvalRequired: false,
+      approvalGrantId: "grant-1",
+    });
+    expect("unexpectedTopLevel" in ananke).toBe(false);
+    expect("forgedReplacement" in (ananke.outcome as Record<string, unknown>)).toBe(false);
+    expect("inheritedEvidence" in (ananke.evidence as Record<string, unknown>)).toBe(false);
+    expect("inheritedOutcome" in (ananke.outcome as Record<string, unknown>)).toBe(false);
+  });
+
+  it("treats malformed canonical result data as indeterminate after dispatch", async () => {
+    const binding = new MockBinding();
+    binding.result = {
+      kind: "response",
+      payload: { outcome: { state: "COMPLETED" }, evidence: [] },
+    };
+
+    const result = await call(relay(binding), request());
+
+    expect(result.body.state).toBe("indeterminate");
+    expect(result.body.dispatchState).toBe("result_lost_indeterminate");
   });
 
   it("rejects malformed or mutated origin/arguments before inspection and dispatch", async () => {
     const binding = new MockBinding();
     const malformed = await call(relay(binding), {
       ...request(),
-      arguments: { fixtureId: SLICE02_FIXTURE_ID, expectedSha256: SLICE02_FIXTURE_SHA256, extra: true },
+      arguments: {
+        fixtureId: SLICE02_FIXTURE_ID,
+        expectedSha256: SLICE02_FIXTURE_SHA256,
+        extra: true,
+      },
     });
     const mutatedOrigin = await call(relay(binding), {
       ...request(),
@@ -351,13 +434,19 @@ describe("Horae Slice 02 bounded relay", () => {
     expect(startupBinding.dispatchCalls).toBe(0);
 
     const protocolBinding = new MockBinding();
-    protocolBinding.currentInspection = inspection({ protocolVersion: "2.0.0", minimumProtocolVersion: "2.0.0" });
+    protocolBinding.currentInspection = inspection({
+      protocolVersion: "2.0.0",
+      minimumProtocolVersion: "2.0.0",
+    });
     const protocol = await call(relay(protocolBinding), request());
     expect(protocol.body.state).toBe("incompatible");
     expect(protocolBinding.dispatchCalls).toBe(0);
 
     const driftBinding = new MockBinding();
-    driftBinding.currentInspection = inspection({ endpoint: "http://other.test/api", instanceId: "other-instance" });
+    driftBinding.currentInspection = inspection({
+      endpoint: "http://other.test/api",
+      instanceId: "other-instance",
+    });
     const drift = await call(relay(driftBinding), request());
     expect(drift.body.state).toBe("incompatible");
     expect(driftBinding.dispatchCalls).toBe(0);
@@ -384,4 +473,153 @@ describe("Horae Slice 02 bounded relay", () => {
     expect(loss.body.dispatchState).toBe("result_lost_indeterminate");
     expect(lossBinding.dispatchCalls).toBe(1);
   });
+
+  it("bounds a local HTTP inspection that never resolves and never dispatches or retries", async () => {
+    let requests = 0;
+    const server = createServer(() => {
+      requests += 1;
+    });
+    await listen(server);
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("inspection test server has no address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const httpBinding = new HttpSlice02AnankeBinding(baseUrl);
+    let dispatchCalls = 0;
+    const binding: Slice02AnankeBinding = {
+      inspect: (signal) => httpBinding.inspect(signal),
+      inspectAction: (signal) => httpBinding.inspectAction(signal),
+      dispatch: (input) => {
+        dispatchCalls += 1;
+        return httpBinding.dispatch(input);
+      },
+    };
+    const instance = new Slice02Relay({
+      binding,
+      expectedOrigin: {
+        runtime: "moirae-code",
+        instanceId: "moirae-instance-1",
+        artifact: "moirae-slice02-host-checkpoint",
+      },
+      expectedAnanke: { instanceId: INSTANCE_ID, endpoint: `${baseUrl}/api` },
+      inspectionTimeoutMs: 50,
+      now: () => NOW,
+    });
+    const startedAt = Date.now();
+
+    try {
+      const result = await call(instance, request());
+      expect(Date.now() - startedAt).toBeLessThan(500);
+      expect(result.status).toBe(504);
+      expect(result.body.state).toBe("timed_out");
+      expect(result.body.dispatchState).toBe("dispatch_not_attempted");
+      expect(dispatchCalls).toBe(0);
+      expect(requests).toBeLessThanOrEqual(5);
+    } finally {
+      server.closeAllConnections();
+      await close(server);
+    }
+  });
+
+  it("bounds a local HTTP action inspection that never resolves after healthy peer inspection", async () => {
+    const responses: Record<string, unknown> = {};
+    const server = createServer((incoming, outgoing) => {
+      const payload = responses[incoming.url ?? ""];
+      if (payload === undefined) return;
+      outgoing.writeHead(200, { "content-type": "application/json" });
+      outgoing.end(JSON.stringify(payload));
+    });
+    await listen(server);
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("action test server has no address");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const snapshot = inspection({ endpoint: `${baseUrl}/api` });
+    Object.assign(responses, {
+      "/api/runtime/identity": snapshot.identity,
+      "/api/runtime/health": snapshot.health,
+      "/api/runtime/readiness": snapshot.readiness,
+      "/api/runtime/registration": snapshot.registration,
+      "/api/runtime/compatibility": snapshot.compatibility,
+    });
+    const httpBinding = new HttpSlice02AnankeBinding(baseUrl);
+    let dispatchCalls = 0;
+    const binding: Slice02AnankeBinding = {
+      inspect: (signal) => httpBinding.inspect(signal),
+      inspectAction: (signal) => httpBinding.inspectAction(signal),
+      dispatch: (input) => {
+        dispatchCalls += 1;
+        return httpBinding.dispatch(input);
+      },
+    };
+    const instance = new Slice02Relay({
+      binding,
+      expectedOrigin: {
+        runtime: "moirae-code",
+        instanceId: "moirae-instance-1",
+        artifact: "moirae-slice02-host-checkpoint",
+      },
+      expectedAnanke: { instanceId: INSTANCE_ID, endpoint: `${baseUrl}/api` },
+      inspectionTimeoutMs: 50,
+      now: () => NOW,
+    });
+
+    try {
+      const result = await call(instance, request());
+      expect(result.body.state).toBe("timed_out");
+      expect(result.body.dispatchState).toBe("dispatch_not_attempted");
+      expect(dispatchCalls).toBe(0);
+    } finally {
+      server.closeAllConnections();
+      await close(server);
+    }
+  });
+
+  it("does not continue after a late completion of an aborted inspection", async () => {
+    let actionCalls = 0;
+    let dispatchCalls = 0;
+    const binding: Slice02AnankeBinding = {
+      inspect: () =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve(inspection()), 75);
+        }),
+      inspectAction: () => {
+        actionCalls += 1;
+        return Promise.resolve(ACTION);
+      },
+      dispatch: () => {
+        dispatchCalls += 1;
+        return Promise.resolve({ kind: "response", payload: { outcome: { state: "COMPLETED" } } });
+      },
+    };
+    const instance = new Slice02Relay({
+      binding,
+      expectedOrigin: {
+        runtime: "moirae-code",
+        instanceId: "moirae-instance-1",
+        artifact: "moirae-slice02-host-checkpoint",
+      },
+      expectedAnanke: { instanceId: INSTANCE_ID, endpoint: ENDPOINT },
+      inspectionTimeoutMs: 20,
+      now: () => NOW,
+    });
+
+    const result = await call(instance, request());
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(result.body.state).toBe("timed_out");
+    expect(result.body.dispatchState).toBe("dispatch_not_attempted");
+    expect(actionCalls).toBe(0);
+    expect(dispatchCalls).toBe(0);
+  });
 });
+
+async function listen(server: Server): Promise<void> {
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+}
+
+async function close(server: Server): Promise<void> {
+  await new Promise<void>((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  );
+}
