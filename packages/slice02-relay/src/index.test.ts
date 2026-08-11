@@ -702,11 +702,15 @@ describe("Horae Slice 02 bounded relay", () => {
         now: () => NOW,
       });
 
-      const result = await call(instance, r1Request());
+      const requestBody = r1Request();
+      const result = await call(instance, requestBody);
 
       expect(result.body.state).toBe("denied");
       expect(result.body.dispatchState).toBe("result_received");
       expect(binding.dispatchCalls).toBe(1);
+      expect(binding.lastDispatch?.adapterMetadata).toEqual(
+        (requestBody.origin as { receipt: Slice02RequestMetadata }).receipt,
+      );
       expect(result.body.reason).toBeUndefined();
     } finally {
       rmSync(ledgerDirectory, { recursive: true, force: true });
