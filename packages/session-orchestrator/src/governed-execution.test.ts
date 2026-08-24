@@ -156,4 +156,55 @@ describe("GovernedExecutionCoordinator", () => {
     expect(result.state).toBe("timed_out");
     expect(result.retryable).toBe(true);
   });
+
+  it("rejects a different request that collides with an in-flight idempotency key", async () => {
+    let release!: () => void;
+    const ananke: GovernedAnankeBinding = {
+      preflight: vi.fn(() => new Promise<GovernedPreflightOutcome>((resolve) => { release = () => resolve({ action: "ALLOW", receipt: {} }); })),
+    };
+    const route = coordinator({ ananke });
+    const first = route.execute(request());
+    const second = route.execute({ ...request(), sessionRequest: { ...request().sessionRequest, correlation: { requestId: "request-002", correlationId: "correlation-002" } } });
+    await expect(second).rejects.toThrow("idempotency key is bound to another in-flight request");
+    release();
+    await expect(first).resolves.toMatchObject({ requestId: "request-001" });
+  });
+
+  it("isolates the same idempotency key across projects and deduplicates a genuine retry", async () => {
+    const route = coordinator();
+    const first = await route.execute(request());
+    const retry = await route.execute(request());
+    const otherProject = request();
+    otherProject.sessionRequest = { ...otherProject.sessionRequest, projectId: "project-002", execution: { ...otherProject.sessionRequest.execution, projectId: "project-002" }, scope: { ...otherProject.sessionRequest.scope, projectId: "project-002" }, correlation: { requestId: "request-002", correlationId: "correlation-002" } };
+    const other = await route.execute(otherProject);
+
+    expect(retry).toEqual(first);
+    expect(other.requestId).toBe("request-002");
+    expect(other.state).toBe("completed");
+    expect(other).not.toEqual(first);
+  });
+
+  it("keeps completed and in-flight identity checks equivalent under reverse completion", async () => {
+    let releaseFirst!: () => void;
+    let releaseSecond!: () => void;
+    let calls = 0;
+    const ananke: GovernedAnankeBinding = {
+      preflight: vi.fn(() => new Promise<GovernedPreflightOutcome>((resolve) => {
+        calls += 1;
+        if (calls === 1) releaseFirst = () => resolve({ action: "ALLOW", receipt: { route: 1 } });
+        else releaseSecond = () => resolve({ action: "ALLOW", receipt: { route: 2 } });
+      })),
+    };
+    const route = coordinator({ ananke });
+    const firstRequest = request();
+    const secondRequest = { ...request(), idempotencyKey: "moirae-request-002", sessionRequest: { ...request().sessionRequest, correlation: { requestId: "request-002", correlationId: "correlation-002" } } };
+    const first = route.execute(firstRequest);
+    const second = route.execute(secondRequest);
+    releaseSecond();
+    releaseFirst();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(firstResult.requestId).toBe("request-001");
+    expect(secondResult.requestId).toBe("request-002");
+    await expect(route.execute({ ...firstRequest, sessionRequest: { ...firstRequest.sessionRequest, correlation: { requestId: "request-003", correlationId: "correlation-003" } } })).rejects.toThrow("idempotency key is bound to another request");
+  });
 });
