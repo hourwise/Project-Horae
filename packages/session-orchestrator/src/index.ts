@@ -182,6 +182,8 @@ export class SessionOrchestrator {
   }
 }
 
+export * from "./governed-execution.js";
+
 function isRequested(capability: SelectedCapability, request: HoraeSessionRequest, profile: HoraeProfile): boolean {
   const requested = new Set(request.requestedCapabilities ?? [
     ...profile.requiredRuntimeCapabilities,
