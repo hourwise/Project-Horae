@@ -6,9 +6,12 @@ import {
   type GovernedAnankeBinding,
   type GovernedAdmissionOutcome,
   type GovernedExecutor,
+  type GovernedExecutionRecord,
+  type GovernedAdmissionInput,
   type GovernedMnemosyneBinding,
   type GovernedExecutionRequest,
   type GovernedPreflightOutcome,
+  type SessionOrchestrator,
 } from "./index.js";
 
 function request(): GovernedExecutionRequest {
@@ -26,7 +29,11 @@ function request(): GovernedExecutionRequest {
         runtimeId: "moirae-code",
         sessionId: "session-input",
       },
-      scope: { mode: ResourceScopeMode.Bounded, projectId: "project-001", resourceIds: ["source-001"] },
+      scope: {
+        mode: ResourceScopeMode.Bounded,
+        projectId: "project-001",
+        resourceIds: ["source-001"],
+      },
       correlation: { requestId: "request-001", correlationId: "correlation-001" },
       requiredCapabilities: ["content.preflight", "memory.admit"],
     },
@@ -43,6 +50,52 @@ function request(): GovernedExecutionRequest {
     content: "governed source",
     contentAccess: { exposure: "SELECTED_CONTENT", destination: "mnemosyne" },
     memoryId: "memory-001",
+  };
+}
+
+function requestVariant(
+  overrides: {
+    idempotencyKey?: string;
+    requestId?: string;
+    correlationId?: string;
+    projectId?: string;
+    tenantId?: string;
+    workspaceId?: string;
+    resourceId?: string;
+    memoryId?: string;
+    content?: unknown;
+  } = {},
+): GovernedExecutionRequest {
+  const base = request();
+  const requestId = overrides.requestId ?? base.sessionRequest.correlation.requestId;
+  const projectId = overrides.projectId ?? base.sessionRequest.projectId;
+  const correlationId = overrides.correlationId ?? `correlation-${requestId}`;
+  const execution = {
+    ...base.sessionRequest.execution,
+    projectId,
+    ...(overrides.tenantId === undefined ? {} : { tenantId: overrides.tenantId }),
+    ...(overrides.workspaceId === undefined ? {} : { workspaceId: overrides.workspaceId }),
+  };
+  const scope = {
+    ...base.sessionRequest.scope,
+    projectId,
+    resourceIds: [overrides.resourceId ?? `${projectId}-source`],
+    ...(overrides.tenantId === undefined ? {} : { tenantId: overrides.tenantId }),
+    ...(overrides.workspaceId === undefined ? {} : { workspaceId: overrides.workspaceId }),
+  };
+  return {
+    ...base,
+    idempotencyKey: overrides.idempotencyKey ?? base.idempotencyKey,
+    profile: { ...base.profile, projectId },
+    memoryId: overrides.memoryId ?? `memory-${requestId}`,
+    content: overrides.content ?? base.content,
+    sessionRequest: {
+      ...base.sessionRequest,
+      projectId,
+      execution,
+      scope,
+      correlation: { requestId, correlationId },
+    },
   };
 }
 
@@ -68,30 +121,59 @@ function session(): HoraeSession {
   };
 }
 
-function coordinator(overrides: {
-  ananke?: GovernedAnankeBinding;
-  mnemosyne?: GovernedMnemosyneBinding;
-  executor?: GovernedExecutor;
-  timeoutMs?: number;
-} = {}) {
+function coordinator(
+  overrides: {
+    ananke?: GovernedAnankeBinding;
+    mnemosyne?: GovernedMnemosyneBinding;
+    executor?: GovernedExecutor;
+    timeoutMs?: number;
+    orchestrator?: SessionOrchestrator;
+  } = {},
+) {
+  const orchestrator =
+    overrides.orchestrator ??
+    ({
+      start: vi.fn((input: HoraeSession["request"]) => {
+        const base = session();
+        const sessionId = `session-${input.correlation.requestId}`;
+        return {
+          ...base,
+          id: sessionId,
+          request: input,
+          composition: {
+            ...base.composition,
+            id: `composition-${input.correlation.requestId}`,
+            correlation: { ...input.correlation, sessionId },
+          },
+        };
+      }),
+    } as unknown as SessionOrchestrator);
   return new GovernedExecutionCoordinator({
-    orchestrator: { start: vi.fn(() => session()) } as unknown as import("./index.js").SessionOrchestrator,
-    ananke: overrides.ananke ?? {
-      preflight: vi.fn(async (): Promise<GovernedPreflightOutcome> => ({
-        action: "ALLOW",
-        receipt: { receiptId: "receipt-001" },
-        observationId: "observation-001",
-        decisionId: "decision-001",
-      })),
-    } as GovernedAnankeBinding,
-    mnemosyne: overrides.mnemosyne ?? {
-      admit: vi.fn(async (): Promise<GovernedAdmissionOutcome> => ({
-        state: "ADMITTED",
-        admissionId: "admission-001",
-        candidateId: "candidate-001",
-        memoryId: "memory-001",
-      })),
-    } as GovernedMnemosyneBinding,
+    orchestrator,
+    ananke:
+      overrides.ananke ??
+      ({
+        preflight: vi.fn(async (): Promise<GovernedPreflightOutcome> => ({
+          action: "ALLOW",
+          receipt: { receiptId: "receipt-001" },
+          observationId: "observation-001",
+          decisionId: "decision-001",
+        })),
+      } as GovernedAnankeBinding),
+    mnemosyne:
+      overrides.mnemosyne ??
+      ({
+        admit: vi.fn(
+          async ({
+            request: input,
+          }: GovernedAdmissionInput): Promise<GovernedAdmissionOutcome> => ({
+            state: "ADMITTED",
+            admissionId: "admission-001",
+            candidateId: "candidate-001",
+            memoryId: input.memoryId,
+          }),
+        ),
+      } as GovernedMnemosyneBinding),
     executor: overrides.executor,
     timeoutMs: overrides.timeoutMs,
   });
@@ -116,7 +198,9 @@ describe("GovernedExecutionCoordinator", () => {
   });
 
   it("is idempotent and fails closed when Ananke does not provide a receipt", async () => {
-    const ananke: GovernedAnankeBinding = { preflight: vi.fn(async (): Promise<GovernedPreflightOutcome> => ({ action: "ALLOW" })) };
+    const ananke: GovernedAnankeBinding = {
+      preflight: vi.fn(async (): Promise<GovernedPreflightOutcome> => ({ action: "ALLOW" })),
+    };
     const mnemosyne: GovernedMnemosyneBinding = { admit: vi.fn() };
     const route = coordinator({ ananke, mnemosyne });
     const first = await route.execute(request());
@@ -133,7 +217,10 @@ describe("GovernedExecutionCoordinator", () => {
     const ananke: GovernedAnankeBinding = {
       preflight: vi.fn((): Promise<GovernedPreflightOutcome> => {
         calls += 1;
-        if (calls === 1) return new Promise<GovernedPreflightOutcome>((resolve) => { release = () => resolve({ action: "ALLOW", receipt: {} }); });
+        if (calls === 1)
+          return new Promise<GovernedPreflightOutcome>((resolve) => {
+            release = () => resolve({ action: "ALLOW", receipt: {} });
+          });
         return Promise.resolve({ action: "ALLOW", receipt: {} });
       }),
     };
@@ -151,7 +238,10 @@ describe("GovernedExecutionCoordinator", () => {
   });
 
   it("converts an executor timeout into a recoverable terminal state", async () => {
-    const route = coordinator({ timeoutMs: 5, executor: { run: () => new Promise<never>(() => undefined) } });
+    const route = coordinator({
+      timeoutMs: 5,
+      executor: { run: () => new Promise<never>(() => undefined) },
+    });
     const result = await route.execute(request());
     expect(result.state).toBe("timed_out");
     expect(result.retryable).toBe(true);
@@ -160,11 +250,22 @@ describe("GovernedExecutionCoordinator", () => {
   it("rejects a different request that collides with an in-flight idempotency key", async () => {
     let release!: () => void;
     const ananke: GovernedAnankeBinding = {
-      preflight: vi.fn(() => new Promise<GovernedPreflightOutcome>((resolve) => { release = () => resolve({ action: "ALLOW", receipt: {} }); })),
+      preflight: vi.fn(
+        () =>
+          new Promise<GovernedPreflightOutcome>((resolve) => {
+            release = () => resolve({ action: "ALLOW", receipt: {} });
+          }),
+      ),
     };
     const route = coordinator({ ananke });
     const first = route.execute(request());
-    const second = route.execute({ ...request(), sessionRequest: { ...request().sessionRequest, correlation: { requestId: "request-002", correlationId: "correlation-002" } } });
+    const second = route.execute({
+      ...request(),
+      sessionRequest: {
+        ...request().sessionRequest,
+        correlation: { requestId: "request-002", correlationId: "correlation-002" },
+      },
+    });
     await expect(second).rejects.toThrow("idempotency key is bound to another in-flight request");
     release();
     await expect(first).resolves.toMatchObject({ requestId: "request-001" });
@@ -175,7 +276,13 @@ describe("GovernedExecutionCoordinator", () => {
     const first = await route.execute(request());
     const retry = await route.execute(request());
     const otherProject = request();
-    otherProject.sessionRequest = { ...otherProject.sessionRequest, projectId: "project-002", execution: { ...otherProject.sessionRequest.execution, projectId: "project-002" }, scope: { ...otherProject.sessionRequest.scope, projectId: "project-002" }, correlation: { requestId: "request-002", correlationId: "correlation-002" } };
+    otherProject.sessionRequest = {
+      ...otherProject.sessionRequest,
+      projectId: "project-002",
+      execution: { ...otherProject.sessionRequest.execution, projectId: "project-002" },
+      scope: { ...otherProject.sessionRequest.scope, projectId: "project-002" },
+      correlation: { requestId: "request-002", correlationId: "correlation-002" },
+    };
     const other = await route.execute(otherProject);
 
     expect(retry).toEqual(first);
@@ -184,20 +291,269 @@ describe("GovernedExecutionCoordinator", () => {
     expect(other).not.toEqual(first);
   });
 
+  it("HGET-01 rejects key-only cross-binding retrieval", async () => {
+    const executor: GovernedExecutor = {
+      run: vi.fn(async ({ request: input }) => ({
+        requestId: input.sessionRequest.correlation.requestId,
+        secret: `output-${input.sessionRequest.correlation.requestId}`,
+      })),
+    };
+    const route = coordinator({ executor });
+    const callerA = requestVariant({
+      requestId: "request-a",
+      resourceId: "source-a",
+      memoryId: "memory-a",
+    });
+    const callerB = requestVariant({
+      requestId: "request-b",
+      resourceId: "source-b",
+      memoryId: "memory-b",
+    });
+
+    await route.execute(callerA);
+    await route.execute(callerB);
+
+    expect(route.get(callerA)).toMatchObject({ requestId: "request-a", memoryId: "memory-a" });
+    expect(route.get(callerB)).toMatchObject({ requestId: "request-b", memoryId: "memory-b" });
+    expect(
+      route.get({
+        ...callerB,
+        sessionRequest: {
+          ...callerB.sessionRequest,
+          correlation: { requestId: "request-a", correlationId: "correlation-a" },
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("HGET-02 requires the exact request ID for same-key records", async () => {
+    const route = coordinator();
+    const callerA = requestVariant({ requestId: "request-a", resourceId: "source-a" });
+    const callerB = requestVariant({ requestId: "request-b", resourceId: "source-b" });
+    await route.execute(callerA);
+    await route.execute(callerB);
+
+    expect(route.get(callerA)?.requestId).toBe("request-a");
+    expect(route.get(callerB)?.requestId).toBe("request-b");
+    expect(
+      route.get({
+        ...callerB,
+        sessionRequest: {
+          ...callerB.sessionRequest,
+          correlation: { requestId: "request-a", correlationId: "correlation-a" },
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("HGET-03 isolates same-key records across projects", async () => {
+    const route = coordinator();
+    const projectA = requestVariant({
+      requestId: "request-project-a",
+      projectId: "project-a",
+      resourceId: "source-project-a",
+    });
+    const projectB = requestVariant({
+      requestId: "request-project-b",
+      projectId: "project-b",
+      resourceId: "source-project-b",
+    });
+    await route.execute(projectA);
+    await route.execute(projectB);
+
+    expect(route.get(projectA)?.requestId).toBe("request-project-a");
+    expect(route.get(projectB)?.requestId).toBe("request-project-b");
+    expect(
+      route.get({
+        ...projectB,
+        sessionRequest: {
+          ...projectB.sessionRequest,
+          correlation: { requestId: "request-project-a", correlationId: "correlation-project-a" },
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("HGET-04 isolates same-key records across tenant and workspace scope", async () => {
+    const route = coordinator();
+    const scopeA = requestVariant({
+      requestId: "request-scope-a",
+      tenantId: "tenant-a",
+      workspaceId: "workspace-a",
+      resourceId: "source-scope-a",
+    });
+    const scopeB = requestVariant({
+      requestId: "request-scope-b",
+      tenantId: "tenant-b",
+      workspaceId: "workspace-b",
+      resourceId: "source-scope-b",
+    });
+    await route.execute(scopeA);
+    await route.execute(scopeB);
+
+    expect(route.get(scopeA)?.requestId).toBe("request-scope-a");
+    expect(route.get(scopeB)?.requestId).toBe("request-scope-b");
+    expect(
+      route.get({
+        ...scopeB,
+        sessionRequest: {
+          ...scopeB.sessionRequest,
+          correlation: { requestId: "request-scope-a", correlationId: "correlation-scope-a" },
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("HGET-05 retrieves a completed record for the correct request and scope", async () => {
+    const route = coordinator();
+    const ownRequest = requestVariant({ requestId: "request-own", resourceId: "source-own" });
+    await route.execute(ownRequest);
+
+    expect(route.get(ownRequest)).toMatchObject({
+      requestId: "request-own",
+      idempotencyKey: ownRequest.idempotencyKey,
+      state: "completed",
+      sessionId: "session-request-own",
+    });
+  });
+
+  it("HGET-06 preserves deterministic genuine retry deduplication", async () => {
+    const executor: GovernedExecutor = { run: vi.fn(async () => ({ ok: true })) };
+    const route = coordinator({ executor });
+    const ownRequest = requestVariant({ requestId: "request-retry", resourceId: "source-retry" });
+    const first = await route.execute(ownRequest);
+    const retry = await route.execute(ownRequest);
+
+    expect(retry).toEqual(first);
+    expect(route.get(ownRequest)).toEqual(first);
+    expect(executor.run).toHaveBeenCalledOnce();
+  });
+
+  it("HGET-07 applies the same identity and scope rules in-flight and after completion", async () => {
+    let releaseA!: () => void;
+    let releaseB!: () => void;
+    let calls = 0;
+    const ananke: GovernedAnankeBinding = {
+      preflight: vi.fn(
+        () =>
+          new Promise<GovernedPreflightOutcome>((resolve) => {
+            calls += 1;
+            if (calls === 1)
+              releaseA = () => resolve({ action: "ALLOW", receipt: { caller: "a" } });
+            else releaseB = () => resolve({ action: "ALLOW", receipt: { caller: "b" } });
+          }),
+      ),
+    };
+    const route = coordinator({ ananke });
+    const callerA = requestVariant({
+      requestId: "request-flight-a",
+      resourceId: "source-flight-a",
+    });
+    const callerB = requestVariant({
+      requestId: "request-flight-b",
+      resourceId: "source-flight-b",
+    });
+    const pendingA = route.execute(callerA);
+    const pendingB = route.execute(callerB);
+    const retryA = route.execute(callerA);
+    const differentRequestSameBinding = requestVariant({
+      requestId: "request-flight-a-other",
+      resourceId: "source-flight-a",
+      memoryId: "memory-request-flight-a",
+    });
+
+    expect(retryA).toBe(pendingA);
+    await expect(route.execute(differentRequestSameBinding)).rejects.toThrow(
+      "idempotency key is bound to another in-flight request",
+    );
+    releaseB();
+    releaseA();
+    await Promise.all([pendingA, pendingB]);
+
+    expect(route.get(callerA)?.requestId).toBe("request-flight-a");
+    expect(route.get(callerB)?.requestId).toBe("request-flight-b");
+    expect(route.get(differentRequestSameBinding)).toBeUndefined();
+  });
+
+  it("HGET-08 makes ambiguous key-only lookup unavailable and fail closed", async () => {
+    const route = coordinator();
+    const callerA = requestVariant({
+      requestId: "request-ambiguous-a",
+      resourceId: "source-ambiguous-a",
+    });
+    const callerB = requestVariant({
+      requestId: "request-ambiguous-b",
+      resourceId: "source-ambiguous-b",
+    });
+    await route.execute(callerA);
+    await route.execute(callerB);
+
+    const keyOnlyLookup = route.get.bind(route) as unknown as (
+      idempotencyKey: string,
+    ) => GovernedExecutionRecord | undefined;
+    expect(() => keyOnlyLookup(callerA.idempotencyKey)).toThrow(
+      "governed execution request is required",
+    );
+  });
+
+  it("HGET-09 prevents wrong-caller output, memory, and session disclosure", async () => {
+    const executor: GovernedExecutor = {
+      run: vi.fn(async ({ request: input }) => ({
+        secret: `output-${input.sessionRequest.correlation.requestId}`,
+      })),
+    };
+    const route = coordinator({ executor });
+    const callerA = requestVariant({
+      requestId: "request-secret-a",
+      resourceId: "source-secret-a",
+      memoryId: "memory-secret-a",
+    });
+    const callerB = requestVariant({
+      requestId: "request-secret-b",
+      resourceId: "source-secret-b",
+      memoryId: "memory-secret-b",
+    });
+    await route.execute(callerA);
+    await route.execute(callerB);
+
+    const wrongCaller = route.get({
+      ...callerB,
+      sessionRequest: {
+        ...callerB.sessionRequest,
+        correlation: { requestId: "request-secret-a", correlationId: "correlation-secret-a" },
+      },
+    });
+    expect(wrongCaller).toBeUndefined();
+    expect(wrongCaller?.output).toBeUndefined();
+    expect(wrongCaller?.memoryId).toBeUndefined();
+    expect(wrongCaller?.sessionId).toBeUndefined();
+  });
+
   it("keeps completed and in-flight identity checks equivalent under reverse completion", async () => {
     let releaseFirst!: () => void;
     let releaseSecond!: () => void;
     let calls = 0;
     const ananke: GovernedAnankeBinding = {
-      preflight: vi.fn(() => new Promise<GovernedPreflightOutcome>((resolve) => {
-        calls += 1;
-        if (calls === 1) releaseFirst = () => resolve({ action: "ALLOW", receipt: { route: 1 } });
-        else releaseSecond = () => resolve({ action: "ALLOW", receipt: { route: 2 } });
-      })),
+      preflight: vi.fn(
+        () =>
+          new Promise<GovernedPreflightOutcome>((resolve) => {
+            calls += 1;
+            if (calls === 1)
+              releaseFirst = () => resolve({ action: "ALLOW", receipt: { route: 1 } });
+            else releaseSecond = () => resolve({ action: "ALLOW", receipt: { route: 2 } });
+          }),
+      ),
     };
     const route = coordinator({ ananke });
     const firstRequest = request();
-    const secondRequest = { ...request(), idempotencyKey: "moirae-request-002", sessionRequest: { ...request().sessionRequest, correlation: { requestId: "request-002", correlationId: "correlation-002" } } };
+    const secondRequest = {
+      ...request(),
+      idempotencyKey: "moirae-request-002",
+      sessionRequest: {
+        ...request().sessionRequest,
+        correlation: { requestId: "request-002", correlationId: "correlation-002" },
+      },
+    };
     const first = route.execute(firstRequest);
     const second = route.execute(secondRequest);
     releaseSecond();
@@ -205,6 +561,14 @@ describe("GovernedExecutionCoordinator", () => {
     const [firstResult, secondResult] = await Promise.all([first, second]);
     expect(firstResult.requestId).toBe("request-001");
     expect(secondResult.requestId).toBe("request-002");
-    await expect(route.execute({ ...firstRequest, sessionRequest: { ...firstRequest.sessionRequest, correlation: { requestId: "request-003", correlationId: "correlation-003" } } })).rejects.toThrow("idempotency key is bound to another request");
+    await expect(
+      route.execute({
+        ...firstRequest,
+        sessionRequest: {
+          ...firstRequest.sessionRequest,
+          correlation: { requestId: "request-003", correlationId: "correlation-003" },
+        },
+      }),
+    ).rejects.toThrow("idempotency key is bound to another request");
   });
 });
