@@ -120,6 +120,45 @@ export class RuntimeRegistry {
     return admitted;
   }
 
+  /**
+   * Replace a supervised peer snapshot after a fresh trusted inspection.
+   * Local lifecycle ownership is retained; a peer inspection cannot
+   * implicitly restart, ready, or otherwise recover a runtime.
+   */
+  refresh(id: string, candidate: PeerRegistrationCandidate): SupervisedRuntimeRegistration {
+    const current = this.requireRegistration(id);
+    if (candidate.id !== id) throw new RuntimeLifecycleError(`Runtime refresh id '${candidate.id}' does not match '${id}'`);
+    const admitted = this.admit(candidate);
+    if (admitted.admission.state !== "admitted" && admitted.admission.state !== "constrained") {
+      throw new RegistrationAdmissionError(admitted.admission);
+    }
+    const nextInstanceId = admitted.registration.identity.instanceId;
+    const currentInstanceId = current.registration.identity.instanceId;
+    if (nextInstanceId && nextInstanceId !== currentInstanceId && this.instanceIds.has(nextInstanceId)) {
+      throw new RegistrationAdmissionError({
+        state: "duplicate",
+        reasons: [`runtime instance '${nextInstanceId}' is already supervised`],
+        admittedAt: admitted.admission.admittedAt,
+      });
+    }
+
+    current.registration = admitted.registration;
+    current.compatibility = admitted.compatibility;
+    current.source = candidate.source;
+    current.admission = admitted.admission;
+    current.observation = {
+      observedAt: admitted.admission.admittedAt,
+      sourceCheckedAt: admitted.registration.health?.checkedAt,
+      freshness: "fresh",
+      ageMs: 0,
+      bindingAvailable: true,
+    };
+    current.warnings = admitted.admission.reasons;
+    if (currentInstanceId && currentInstanceId !== nextInstanceId) this.instanceIds.delete(currentInstanceId);
+    if (nextInstanceId) this.instanceIds.set(nextInstanceId, id);
+    return current;
+  }
+
   /** Parse and assess a peer without admitting it to local supervision. */
   admit(candidate: PeerRegistrationCandidate): SupervisedRuntimeRegistration {
     const admittedAt = candidate.observedAt ?? new Date().toISOString();

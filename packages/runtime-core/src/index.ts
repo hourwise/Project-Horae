@@ -4,6 +4,8 @@ import { buildHoraeInspection, negotiateWithHorae } from "@horae/adrasteia-adapt
 export { InMemoryAuditRouter } from "@horae/audit-router";
 export { RuntimeLifecycleError, RuntimeProtocolCompatibilityError, RegistrationAdmissionError, RuntimeRegistry } from "@horae/runtime-registry";
 export type { LifecycleTransitionOptions, PeerRegistrationCandidate, ProtocolNegotiationResult, RuntimeHealthAssessment, StaleHeartbeatOptions } from "@horae/runtime-registry";
+export { RuntimeDiscoveryCoordinator, RuntimeInspectionError } from "./runtime-discovery.js";
+export type { RuntimeInspectionBinding, RuntimeInspectionTarget } from "./runtime-discovery.js";
 export { CapabilityProviderConflictError, SessionOrchestrator, CompositionValidationError, SessionRequestValidationError, createDevelopmentSessionRequest, validateTrustedSessionRequest, DEFAULT_HORAE_PROTOCOL_VERSION } from "@horae/session-orchestrator";
 export type { CapabilityProviderConflict, SessionOrchestratorOptions } from "@horae/session-orchestrator";
 export type {

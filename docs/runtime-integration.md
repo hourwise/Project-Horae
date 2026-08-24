@@ -9,6 +9,9 @@ Implemented and tested:
 - runtimes register through `RuntimeRegistry` with `RuntimeRegistration`;
 - registrations carry `RuntimeIdentity`, `RuntimeHealth`, optional `RuntimeLifecycle`, and declared capabilities;
 - session scaffolding reads those registrations to build a `HoraeCapabilityPlan`, `HoraeComposition`, and `HoraeSession`.
+- `RuntimeDiscoveryCoordinator` now connects an existing transport-neutral peer
+  inspection binding to registry admission and refresh; inspection failures are
+  fail-closed, and refresh never implicitly recovers local lifecycle state.
 - `SessionOrchestrator.assessState()` derives `ready` or `degraded` for a session's selected runtime IDs without changing lifecycle state or replanning.
 
 Implemented but scaffold-level:
