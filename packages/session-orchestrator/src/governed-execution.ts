@@ -55,6 +55,8 @@ export interface GovernedPreflightOutcome {
   decisionId?: string;
   reasonCode?: string;
   grantedExposure?: string;
+  /** Exact released surface; transport glue must carry it unchanged to admission. */
+  surface?: unknown;
 }
 
 export interface GovernedAnankeBinding {
