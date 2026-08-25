@@ -221,7 +221,7 @@ describe("GovernedExecutionCoordinator", () => {
           return new Promise<GovernedPreflightOutcome>((resolve) => {
             release = () => resolve({ action: "ALLOW", receipt: {} });
           });
-        return Promise.resolve({ action: "ALLOW", receipt: {} });
+        return Promise.resolve<GovernedPreflightOutcome>({ action: "ALLOW", receipt: {} });
       }),
     };
     const route = coordinator({ ananke });
@@ -237,14 +237,165 @@ describe("GovernedExecutionCoordinator", () => {
     expect(recovered.recoveredFrom).toBe("request-001");
   });
 
-  it("converts an executor timeout into a recoverable terminal state", async () => {
+  it("marks an executor timeout as unknown-effect recovery-required", async () => {
     const route = coordinator({
       timeoutMs: 5,
       executor: { run: () => new Promise<never>(() => undefined) },
     });
     const result = await route.execute(request());
-    expect(result.state).toBe("timed_out");
-    expect(result.retryable).toBe(true);
+    expect(result.state).toBe("recovery_required");
+    expect(result.reason).toBe("horae_timeout_effect_outcome_unknown");
+    expect(result.retryable).toBe(false);
+    await expect(route.recover(request())).rejects.toThrow("reconciliation required");
+  });
+
+  it("P0-A blocks a duplicate effect after timeout and recovery", async () => {
+    let releaseFirstEffect!: () => void;
+    let sideEffects = 0;
+    let calls = 0;
+    const firstEffect = new Promise<void>((resolve) => {
+      releaseFirstEffect = resolve;
+    });
+    const executor: GovernedExecutor = {
+      run: vi.fn(async () => {
+        calls += 1;
+        if (calls === 1) await firstEffect;
+        sideEffects += 1;
+        return { sideEffects };
+      }),
+    };
+    const route = coordinator({ timeoutMs: 5, executor });
+
+    const timedOut = await route.execute(request());
+    expect(timedOut.state).toBe("recovery_required");
+    expect(timedOut.reason).toBe("horae_timeout_effect_outcome_unknown");
+    expect(timedOut.retryable).toBe(false);
+    expect(sideEffects).toBe(0);
+
+    releaseFirstEffect();
+    await vi.waitFor(() => expect(sideEffects).toBe(1));
+
+    await expect(route.recover(request())).rejects.toThrow("reconciliation required");
+    expect(sideEffects).toBe(1);
+  });
+
+  it("refuses recovery when an executor observes abort only after its effect", async () => {
+    let sideEffects = 0;
+    const executor: GovernedExecutor = {
+      run: vi.fn(async ({ signal }) => {
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        sideEffects += 1;
+        return { observedAbortAfterEffect: signal.aborted };
+      }),
+    };
+    const route = coordinator({ timeoutMs: 5, executor });
+
+    const result = await route.execute(request());
+    expect(result.state).toBe("recovery_required");
+    expect(result.retryable).toBe(false);
+    await vi.waitFor(() => expect(sideEffects).toBe(1));
+    await expect(route.recover(request())).rejects.toThrow("reconciliation required");
+    expect(executor.run).toHaveBeenCalledOnce();
+  });
+
+  it("does not retry an executor that completes successfully just after timeout", async () => {
+    let releaseLateCompletion!: () => void;
+    let sideEffects = 0;
+    const lateCompletion = new Promise<void>((resolve) => {
+      releaseLateCompletion = resolve;
+    });
+    const executor: GovernedExecutor = {
+      run: vi.fn(async () => {
+        await lateCompletion;
+        sideEffects += 1;
+        return { ok: true };
+      }),
+    };
+    const route = coordinator({ timeoutMs: 5, executor });
+
+    const result = await route.execute(request());
+    expect(result.state).toBe("recovery_required");
+    releaseLateCompletion();
+    await vi.waitFor(() => expect(sideEffects).toBe(1));
+    expect(route.get(request())).toMatchObject({ state: "recovery_required", retryable: false });
+    await expect(route.recover(request())).rejects.toThrow("reconciliation required");
+    expect(sideEffects).toBe(1);
+  });
+
+  it("refuses two concurrent recoveries after an unknown-effect cancellation", async () => {
+    let releaseEffect!: () => void;
+    let sideEffects = 0;
+    const effect = new Promise<void>((resolve) => {
+      releaseEffect = resolve;
+    });
+    const executor: GovernedExecutor = {
+      run: vi.fn(async () => {
+        await effect;
+        sideEffects += 1;
+        return { ok: true };
+      }),
+    };
+    const route = coordinator({ timeoutMs: 1_000, executor });
+    const controller = new AbortController();
+    const pending = route.execute(request(), controller.signal);
+    await vi.waitFor(() => expect(executor.run).toHaveBeenCalledOnce());
+    controller.abort();
+    const cancelled = await pending;
+
+    expect(cancelled.state).toBe("recovery_required");
+    expect(cancelled.reason).toBe("horae_cancelled_effect_outcome_unknown");
+    releaseEffect();
+    await vi.waitFor(() => expect(sideEffects).toBe(1));
+
+    const recoveries = await Promise.allSettled([
+      route.recover(request()),
+      route.recover(request()),
+    ]);
+    expect(recoveries.every(({ status }) => status === "rejected")).toBe(true);
+    expect(executor.run).toHaveBeenCalledOnce();
+    expect(sideEffects).toBe(1);
+  });
+
+  it("preserves cancellation recovery before executor dispatch", async () => {
+    let releasePreflight!: () => void;
+    let calls = 0;
+    const ananke: GovernedAnankeBinding = {
+      preflight: vi.fn(() => {
+        calls += 1;
+        if (calls === 1) {
+          return new Promise<GovernedPreflightOutcome>((resolve) => {
+            releasePreflight = () => resolve({ action: "ALLOW", receipt: {} });
+          });
+        }
+        return Promise.resolve<GovernedPreflightOutcome>({ action: "ALLOW", receipt: {} });
+      }),
+    };
+    const executor: GovernedExecutor = { run: vi.fn(async () => ({ ok: true })) };
+    const route = coordinator({ ananke, executor, timeoutMs: 5 });
+
+    const timedOut = await route.execute(request());
+    expect(timedOut.state).toBe("timed_out");
+    expect(timedOut.retryable).toBe(true);
+    releasePreflight();
+    const recovered = await route.recover(request());
+
+    expect(recovered.state).toBe("completed");
+    expect(executor.run).toHaveBeenCalledOnce();
+  });
+
+  it("does not retry an executor failure after dispatch without effect evidence", async () => {
+    const route = coordinator({
+      executor: {
+        run: async () => {
+          throw new Error("provider connection lost");
+        },
+      },
+    });
+    const result = await route.execute(request());
+
+    expect(result.state).toBe("recovery_required");
+    expect(result.retryable).toBe(false);
+    await expect(route.recover(request())).rejects.toThrow("reconciliation required");
   });
 
   it("rejects a different request that collides with an in-flight idempotency key", async () => {

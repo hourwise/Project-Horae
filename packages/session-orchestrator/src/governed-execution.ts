@@ -185,6 +185,11 @@ export class GovernedExecutionCoordinator {
     if (!previous || !["timed_out", "cancelled", "recovery_required"].includes(previous.state)) {
       return Promise.reject(new Error("request is not recoverable"));
     }
+    if (!previous.retryable) {
+      return Promise.reject(
+        new Error("request effect outcome is unknown; reconciliation required"),
+      );
+    }
     this.records.delete(binding);
     return this.execute({ ...input, idempotencyKey: input.idempotencyKey }, signal).then(
       (record) => {
@@ -223,6 +228,7 @@ export class GovernedExecutionCoordinator {
     };
     const controller = new AbortController();
     let timedOut = false;
+    let executionDispatched = false;
     const timeout = setTimeout(() => {
       timedOut = true;
       controller.abort("horae_timeout");
@@ -281,6 +287,7 @@ export class GovernedExecutionCoordinator {
       throwIfAborted(controller.signal);
 
       if (this.options.executor) {
+        executionDispatched = true;
         transition(record, "executing", this.now);
         record.output = await awaitWithAbort(
           this.options.executor.run({
@@ -297,16 +304,28 @@ export class GovernedExecutionCoordinator {
       return record;
     } catch (error) {
       if (timedOut) {
-        record.reason = "horae_timeout";
-        record.retryable = true;
-        transition(record, "timed_out", this.now);
+        if (executionDispatched) {
+          record.reason = "horae_timeout_effect_outcome_unknown";
+          record.retryable = false;
+          transition(record, "recovery_required", this.now);
+        } else {
+          record.reason = "horae_timeout";
+          record.retryable = true;
+          transition(record, "timed_out", this.now);
+        }
       } else if (controller.signal.aborted) {
-        record.reason = "horae_cancelled";
-        record.retryable = true;
-        transition(record, "cancelled", this.now);
+        if (executionDispatched) {
+          record.reason = "horae_cancelled_effect_outcome_unknown";
+          record.retryable = false;
+          transition(record, "recovery_required", this.now);
+        } else {
+          record.reason = "horae_cancelled";
+          record.retryable = true;
+          transition(record, "cancelled", this.now);
+        }
       } else {
         record.reason = "governed_route_failed";
-        record.retryable = true;
+        record.retryable = !executionDispatched;
         transition(record, "recovery_required", this.now);
       }
       return record;
