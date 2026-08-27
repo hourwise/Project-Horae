@@ -264,4 +264,14 @@ describe("durable governed execution", () => {
     await expect(makeCoordinator(filePath, effect).execute(changedScope)).rejects.toThrow("IDEMPOTENCY_BINDING_MISMATCH");
     expect(effect.attempts).toBe(1);
   });
+
+  it("rejects a changed correlation under the same request identity after restart", async () => {
+    const filePath = tempStatePath();
+    const effect = { attempts: 0, successes: 0, completed: new Set<string>(), inFlight: false };
+    await makeCoordinator(filePath, effect).execute(request());
+    const changedCorrelation = request();
+    changedCorrelation.sessionRequest.correlation = { ...changedCorrelation.sessionRequest.correlation, correlationId: "different-correlation" };
+    await expect(makeCoordinator(filePath, effect).execute(changedCorrelation)).rejects.toThrow("IDEMPOTENCY_BINDING_MISMATCH");
+    expect(effect.attempts).toBe(1);
+  });
 });

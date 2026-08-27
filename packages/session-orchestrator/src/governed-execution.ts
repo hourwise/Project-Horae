@@ -193,7 +193,7 @@ export class GovernedExecutionCoordinator {
   private readonly now: () => string;
   private readonly inFlight = new Map<
     string,
-    { requestId: string; promise: Promise<GovernedExecutionRecord> }
+    { requestId: string; correlationId: string; promise: Promise<GovernedExecutionRecord> }
   >();
   private readonly records = new Map<string, GovernedExecutionRecord>();
 
@@ -212,14 +212,14 @@ export class GovernedExecutionCoordinator {
     const requestId = input.sessionRequest.correlation.requestId;
     const existing = this.records.get(binding);
     if (existing) {
-      if (existing.requestId !== requestId) {
+      if (existing.requestId !== requestId || existing.correlation.correlationId !== input.sessionRequest.correlation.correlationId) {
         return Promise.reject(new Error("idempotency key is bound to another request"));
       }
       return Promise.resolve(snapshot(existing));
     }
     const pending = this.inFlight.get(binding);
     if (pending) {
-      if (pending.requestId !== requestId)
+      if (pending.requestId !== requestId || pending.correlationId !== input.sessionRequest.correlation.correlationId)
         return Promise.reject(new Error("idempotency key is bound to another in-flight request"));
       return pending.promise;
     }
@@ -229,7 +229,7 @@ export class GovernedExecutionCoordinator {
       this.inFlight.delete(binding);
       return snapshot(record);
     });
-    this.inFlight.set(binding, { requestId, promise: run });
+    this.inFlight.set(binding, { requestId, correlationId: input.sessionRequest.correlation.correlationId, promise: run });
     return run;
   }
 
@@ -292,7 +292,7 @@ export class GovernedExecutionCoordinator {
     const requestId = input.sessionRequest.correlation.requestId;
     const pending = this.inFlight.get(binding);
     if (pending) {
-      if (pending.requestId !== requestId)
+      if (pending.requestId !== requestId || pending.correlationId !== input.sessionRequest.correlation.correlationId)
         return Promise.reject(new Error("idempotency key is bound to another in-flight request"));
       return pending.promise;
     }
@@ -300,7 +300,7 @@ export class GovernedExecutionCoordinator {
       const current = this.inFlight.get(binding);
       if (current?.promise === run) this.inFlight.delete(binding);
     });
-    this.inFlight.set(binding, { requestId, promise: run });
+    this.inFlight.set(binding, { requestId, correlationId: input.sessionRequest.correlation.correlationId, promise: run });
     return run;
   }
 
@@ -770,7 +770,7 @@ function idempotencyBinding(input: GovernedExecutionRequest): string {
 }
 
 function operationBindingDigest(input: GovernedExecutionRequest): string {
-  return `sha256:${createHash("sha256").update(idempotencyBinding(input), "utf8").digest("hex")}`;
+  return `sha256:${createHash("sha256").update(stableJson({ retryBinding: idempotencyBinding(input), correlation: input.sessionRequest.correlation }), "utf8").digest("hex")}`;
 }
 
 function sameRequestBinding(
@@ -778,7 +778,7 @@ function sameRequestBinding(
   input: GovernedExecutionRequest,
   binding: string,
 ): boolean {
-  return record.bindingDigest === binding && record.requestId === input.sessionRequest.correlation.requestId && record.idempotencyKey === input.idempotencyKey;
+  return record.bindingDigest === binding && record.requestId === input.sessionRequest.correlation.requestId && record.correlation.correlationId === input.sessionRequest.correlation.correlationId && record.idempotencyKey === input.idempotencyKey;
 }
 
 function stableJson(value: unknown): string {
