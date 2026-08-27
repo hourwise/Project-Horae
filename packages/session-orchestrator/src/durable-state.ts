@@ -36,8 +36,8 @@ const STATES = new Set<GovernedExecutionState>([
 ]);
 
 const TRANSITIONS: Record<GovernedExecutionState, Set<GovernedExecutionState>> = {
-  received: new Set(["composed"]),
-  composed: new Set(["preflighted"]),
+  received: new Set(["composed", "recovery_required"]),
+  composed: new Set(["preflighted", "recovery_required"]),
   preflighted: new Set(["admitted", "denied", "quarantined", "cancelled", "timed_out", "recovery_required"]),
   admitted: new Set(["execution_intent_recorded", "completed", "quarantined", "cancelled", "timed_out", "recovery_required"]),
   executing: new Set(["effect_attempted", "recovery_required"]),

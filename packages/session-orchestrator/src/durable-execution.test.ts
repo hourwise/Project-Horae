@@ -57,7 +57,7 @@ function makeCoordinator(
 ) {
   return new GovernedExecutionCoordinator({
     orchestrator: {
-      start: (input) => ({
+      start: (input: any) => ({
         id: `session-${input.correlation.requestId}`,
         composition: { id: `composition-${input.correlation.requestId}` },
         request: input,
