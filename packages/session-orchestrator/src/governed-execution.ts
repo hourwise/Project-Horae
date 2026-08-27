@@ -8,6 +8,7 @@ import type {
 import { SessionOrchestrator } from "./index.js";
 import type {
   DurableEffectStatus,
+  DurableDispatchClaim,
   DurableExecutionStateStore,
 } from "./durable-state.js";
 
@@ -33,6 +34,14 @@ export interface GovernedSourceReference {
   canonicalPath?: string;
   sourceUri?: string;
   sourceHash?: string;
+}
+
+export interface DurablePrincipalIdentity {
+  id: string;
+  kind: string;
+  issuer?: string;
+  tenantId?: string;
+  attributes?: Record<string, string>;
 }
 
 /**
@@ -113,6 +122,9 @@ export interface GovernedExecutionRecord {
   bindingDigest?: string;
   requestId: string;
   idempotencyKey: string;
+  /** Direct durable copies of the authenticated and acting identities. */
+  authenticatedPrincipal: DurablePrincipalIdentity;
+  actingPrincipal: DurablePrincipalIdentity;
   correlation: CorrelationContext;
   state: GovernedExecutionState;
   history: GovernedExecutionHistoryEntry[];
@@ -129,8 +141,10 @@ export interface GovernedExecutionRecord {
   recoveredFrom?: string;
   /** Persisted before an effect call so recovery has a stable reconciliation key. */
   effectId?: string;
+  effectAuthorityId?: string;
   effectStatus?: DurableEffectStatus;
   effectDigest?: string;
+  dispatchClaim?: DurableDispatchClaim;
   preflight?: GovernedPreflightOutcome;
   admission?: GovernedAdmissionOutcome;
 }
@@ -144,6 +158,7 @@ export interface GovernedEffectReconciler {
   reconcile(input: {
     effectId: string;
     bindingDigest: string;
+    effectAuthorityId?: string;
     request: GovernedExecutionRequest;
   }): Promise<EffectReconciliationResult>;
 }
@@ -178,11 +193,14 @@ export interface GovernedExecutionCoordinatorOptions {
   stateStore?: DurableExecutionStateStore;
   /** Required to retry after an effect may have crossed its boundary. */
   effectReconciler?: GovernedEffectReconciler;
+  /** Stable identity of the authoritative effect ledger used by this coordinator. */
+  effectAuthorityId?: string;
   /** Test-only deterministic fault injection at named transition boundaries. */
   faultInjector?: (point: GovernedExecutionFaultPoint) => void;
 }
 
 const KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const ACTIVE_DISPATCH_OWNERS = new Set<string>();
 
 /**
  * Runs one request through composition -> Ananke -> Mnemosyne -> optional
@@ -296,7 +314,9 @@ export class GovernedExecutionCoordinator {
         return Promise.reject(new Error("idempotency key is bound to another in-flight request"));
       return pending.promise;
     }
-    const run = this.runDurably(input, signal).finally(() => {
+    const dispatchOwnerId = `pid:${process.pid}:dispatch:${randomUUID()}`;
+    const run = this.runDurably(input, dispatchOwnerId, signal).finally(() => {
+      ACTIVE_DISPATCH_OWNERS.delete(dispatchOwnerId);
       const current = this.inFlight.get(binding);
       if (current?.promise === run) this.inFlight.delete(binding);
     });
@@ -306,6 +326,7 @@ export class GovernedExecutionCoordinator {
 
   private async runDurably(
     input: GovernedExecutionRequest,
+    dispatchOwnerId: string,
     externalSignal?: AbortSignal,
   ): Promise<GovernedExecutionRecord> {
     const store = this.options.stateStore;
@@ -327,10 +348,13 @@ export class GovernedExecutionCoordinator {
         requestId: input.sessionRequest.correlation.requestId,
         idempotencyKey: input.idempotencyKey,
         correlation: input.sessionRequest.correlation,
+        authenticatedPrincipal: principalBinding(input.sessionRequest.execution.authenticatedPrincipal),
+        actingPrincipal: principalBinding(input.sessionRequest.execution.actingPrincipal),
         state: "received",
         history: [{ state: "received", occurredAt: this.now() }],
         retryable: false,
         effectId: `effect:${binding}`,
+        effectAuthorityId: this.options.effectAuthorityId,
         effectStatus: "not_attempted",
       };
       store.put(binding, created);
@@ -356,6 +380,14 @@ export class GovernedExecutionCoordinator {
         if (["effect_confirmed"].includes(record.state) || record.effectStatus === "confirmed") {
           record = await this.completeConfirmed(input, record, binding);
           return snapshot(record);
+        }
+        if (record.dispatchClaim && record.dispatchClaim.ownerId !== dispatchOwnerId && isDispatchOwnerActive(record.dispatchClaim.ownerId)) {
+          return snapshot({
+            ...record,
+            state: "recovery_required",
+            retryable: false,
+            reason: "dispatch is owned by another live execution instance",
+          });
         }
         if (["execution_intent_recorded", "executing", "effect_attempted", "recovery_required"].includes(record.state) && record.effectStatus !== "not_attempted") {
           const reconciliation = await this.reconcile(input, record, binding);
@@ -444,6 +476,7 @@ export class GovernedExecutionCoordinator {
           if (!preflight || !admission) throw new Error("durable admitted state is missing governance evidence");
           const intent = await this.persistTransition(record, binding, "execution_intent_recorded", {
             effectId: record.effectId ?? `effect:${binding}`,
+            effectAuthorityId: record.effectAuthorityId ?? this.options.effectAuthorityId,
             effectStatus: "intent_recorded",
             retryable: false,
           });
@@ -452,10 +485,26 @@ export class GovernedExecutionCoordinator {
             continue;
           }
           this.options.faultInjector?.("after_intent_before_effect");
-          record = await this.persistTransition(intent, binding, "executing", { effectStatus: "intent_recorded" });
+          const claim = store.claimDispatch(binding, dispatchOwnerId, this.now());
+          record = claim.record;
+          if (!claim.acquired) {
+            return snapshot({
+              ...record,
+              state: "recovery_required",
+              retryable: false,
+              reason: "dispatch ownership lost to another execution instance",
+            });
+          }
+          ACTIVE_DISPATCH_OWNERS.add(dispatchOwnerId);
+          record = await this.persistTransition(record, binding, "executing", { effectStatus: "intent_recorded" }, dispatchOwnerId);
           if (record.state !== "executing") continue;
-          record = await this.persistTransition(record, binding, "effect_attempted", { effectStatus: "attempted" });
-          if (record.state !== "effect_attempted") continue;
+          if (record.dispatchClaim?.ownerId !== dispatchOwnerId) {
+            return snapshot({ ...record, state: "recovery_required", retryable: false, reason: "dispatch ownership was not retained" });
+          }
+          record = await this.persistTransition(record, binding, "effect_attempted", { effectStatus: "attempted" }, dispatchOwnerId);
+          if (record.state !== "effect_attempted" || record.dispatchClaim?.ownerId !== dispatchOwnerId) {
+            return snapshot({ ...record, state: "recovery_required", retryable: false, reason: "dispatch ownership was not retained" });
+          }
           effectBoundaryReached = true;
           this.options.faultInjector?.("before_effect_invocation");
           const output = await awaitWithAbort(
@@ -475,9 +524,9 @@ export class GovernedExecutionCoordinator {
             output,
             effectDigest: binding,
             retryable: false,
-          });
+          }, dispatchOwnerId);
           this.options.faultInjector?.("after_effect_confirmed_before_completed");
-          record = await this.persistTransition(record, binding, "completed", { retryable: false });
+          record = await this.persistTransition(record, binding, "completed", { retryable: false }, dispatchOwnerId);
           this.options.faultInjector?.("after_completion_before_response");
           return snapshot(record);
         }
@@ -522,11 +571,11 @@ export class GovernedExecutionCoordinator {
     binding: string,
   ): Promise<GovernedExecutionRecord | undefined> {
     const effectId = record.effectId ?? `effect:${binding}`;
-    const knownAbsent = record.effectStatus === "intent_recorded";
+    const knownAbsent = record.effectStatus === "intent_recorded" && !record.dispatchClaim;
     const result = knownAbsent
       ? { status: "ABSENT" as const }
       : this.options.effectReconciler
-        ? await this.options.effectReconciler.reconcile({ effectId, bindingDigest: binding, request: input })
+        ? await this.options.effectReconciler.reconcile({ effectId, bindingDigest: binding, effectAuthorityId: record.effectAuthorityId, request: input })
         : { status: "UNKNOWN" as const };
     if (result.status === "CONFIRMED") {
       let next = record;
@@ -547,6 +596,7 @@ export class GovernedExecutionCoordinator {
         return this.persistTransition(record, binding, "admitted", {
           effectStatus: "not_attempted",
           effectId,
+          dispatchClaim: undefined,
           retryable: false,
           reason: undefined,
         });
@@ -578,6 +628,7 @@ export class GovernedExecutionCoordinator {
     binding: string,
     state: GovernedExecutionState,
     patch: Partial<GovernedExecutionRecord> = {},
+    dispatchOwnerId?: string,
   ): Promise<GovernedExecutionRecord> {
     const store = this.options.stateStore;
     if (!store) throw new Error("durable execution state store is required");
@@ -585,6 +636,7 @@ export class GovernedExecutionCoordinator {
       const current = store.get(binding);
       if (!current) throw new Error("durable execution record disappeared");
       if (current.history.length !== record.history.length || current.state !== record.state) return current;
+      if (dispatchOwnerId && current.dispatchClaim?.ownerId !== dispatchOwnerId) return current;
       const next = { ...record, ...patch, history: record.history.map((entry) => ({ ...entry })) };
       transition(next, state, this.now);
       store.put(binding, next);
@@ -620,6 +672,8 @@ export class GovernedExecutionCoordinator {
     const record: GovernedExecutionRecord = {
       requestId: input.sessionRequest.correlation.requestId,
       idempotencyKey: input.idempotencyKey,
+      authenticatedPrincipal: principalBinding(input.sessionRequest.execution.authenticatedPrincipal),
+      actingPrincipal: principalBinding(input.sessionRequest.execution.actingPrincipal),
       correlation: input.sessionRequest.correlation,
       state: "received",
       history: [{ state: "received", occurredAt: this.now() }],
@@ -766,6 +820,8 @@ function idempotencyBinding(input: GovernedExecutionRequest): string {
     content: input.content,
     contentAccess: input.contentAccess,
     memoryId: input.memoryId,
+    authenticatedPrincipal: principalBinding(input.sessionRequest.execution.authenticatedPrincipal),
+    actingPrincipal: principalBinding(input.sessionRequest.execution.actingPrincipal),
   });
 }
 
@@ -778,7 +834,17 @@ function sameRequestBinding(
   input: GovernedExecutionRequest,
   binding: string,
 ): boolean {
-  return record.bindingDigest === binding && record.requestId === input.sessionRequest.correlation.requestId && record.correlation.correlationId === input.sessionRequest.correlation.correlationId && record.idempotencyKey === input.idempotencyKey;
+  return record.bindingDigest === binding && record.requestId === input.sessionRequest.correlation.requestId && record.correlation.correlationId === input.sessionRequest.correlation.correlationId && record.idempotencyKey === input.idempotencyKey && stableJson(record.authenticatedPrincipal) === stableJson(principalBinding(input.sessionRequest.execution.authenticatedPrincipal)) && stableJson(record.actingPrincipal) === stableJson(principalBinding(input.sessionRequest.execution.actingPrincipal));
+}
+
+function principalBinding(principal: { id: string; kind: string; issuer?: string; tenantId?: string; attributes?: Record<string, string> }): DurablePrincipalIdentity {
+  return {
+    id: principal.id,
+    kind: principal.kind,
+    ...(principal.issuer === undefined ? {} : { issuer: principal.issuer }),
+    ...(principal.tenantId === undefined ? {} : { tenantId: principal.tenantId }),
+    ...(principal.attributes === undefined ? {} : { attributes: { ...principal.attributes } }),
+  };
 }
 
 function stableJson(value: unknown): string {
@@ -830,9 +896,25 @@ async function awaitWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Prom
 function snapshot(record: GovernedExecutionRecord): GovernedExecutionRecord {
   return {
     ...record,
+    authenticatedPrincipal: { ...record.authenticatedPrincipal, attributes: record.authenticatedPrincipal.attributes ? { ...record.authenticatedPrincipal.attributes } : undefined },
+    actingPrincipal: { ...record.actingPrincipal, attributes: record.actingPrincipal.attributes ? { ...record.actingPrincipal.attributes } : undefined },
     correlation: { ...record.correlation },
+    dispatchClaim: record.dispatchClaim ? { ...record.dispatchClaim } : undefined,
     history: record.history.map((entry) => ({ ...entry })),
   };
+}
+
+function isDispatchOwnerActive(ownerId: string): boolean {
+  if (ACTIVE_DISPATCH_OWNERS.has(ownerId)) return true;
+  const match = /^pid:(\d+):/.exec(ownerId);
+  if (!match) return false;
+  if (Number(match[1]) === process.pid) return false;
+  try {
+    process.kill(Number(match[1]), 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function createGovernedRequestId(): string {

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -54,7 +55,7 @@ function request(content = "durable governed source"): GovernedExecutionRequest 
 function makeCoordinator(
   filePath: string,
   effect: { attempts: number; successes: number; completed: Set<string>; inFlight: boolean; block?: Promise<void> },
-  options: { crash?: (point: GovernedExecutionFaultPoint) => void; effectReconciler?: boolean; failEffect?: boolean } = {},
+  options: { crash?: (point: GovernedExecutionFaultPoint) => void; effectReconciler?: boolean; failEffect?: boolean; preflightBarrier?: { arrive(): Promise<void> } } = {},
 ) {
   return new GovernedExecutionCoordinator({
     orchestrator: {
@@ -68,7 +69,10 @@ function makeCoordinator(
         startedAt: "2026-08-27T12:00:00.000Z",
       }),
     } as never,
-    ananke: { preflight: async () => ({ action: "ALLOW", receipt: { receiptId: "receipt-durable" }, observationId: "observation-durable", decisionId: "decision-durable" }) },
+    ananke: { preflight: async () => {
+      await options.preflightBarrier?.arrive();
+      return { action: "ALLOW", receipt: { receiptId: "receipt-durable" }, observationId: "observation-durable", decisionId: "decision-durable" };
+    } },
     mnemosyne: { admit: async ({ request: input }) => ({ state: "ADMITTED", admissionId: "admission-durable", candidateId: "candidate-durable", memoryId: input.memoryId }) },
     executor: {
       run: async ({ effectId }) => {
@@ -129,6 +133,14 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function runChild(script: string, args: string[]): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [script, ...args], { cwd: process.cwd(), stdio: "ignore", windowsHide: true });
+    child.once("error", reject);
+    child.once("exit", (code, signal) => resolve({ code, signal }));
+  });
+}
+
 describe("durable governed execution", () => {
   it.each([
     ["after_receipt_before_authority", false],
@@ -153,6 +165,25 @@ describe("durable governed execution", () => {
     expect(recovered.state).toBe("completed");
     expect(effect.successes).toBe(1);
     expect(effect.attempts).toBe(failEffect ? 2 : 1);
+  });
+
+  it("arbitrates the same operation across two independent Node processes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "horae-005d-process-race-"));
+    const statePath = join(root, "execution.json");
+    const callLogPath = join(root, "effect-calls.log");
+    const barrierPath = join(root, "barrier");
+    const childScript = join(process.cwd(), "packages/session-orchestrator/src/durable-dispatch-child.mjs");
+    const [left, right] = await Promise.all([
+      runChild(childScript, [statePath, callLogPath, barrierPath, "a"]),
+      runChild(childScript, [statePath, callLogPath, barrierPath, "b"]),
+    ]);
+    expect(left.code).toBe(0);
+    expect(right.code).toBe(0);
+    const dispatches = readFileSync(callLogPath, "utf8").trim().split(/\r?\n/).filter(Boolean);
+    expect(dispatches).toHaveLength(1);
+    const results = ["a", "b"].map((id) => JSON.parse(readFileSync(join(barrierPath, `${id}.result.json`), "utf8")));
+    expect(results.some((result) => result.state === "completed")).toBe(true);
+    expect(results.every((result) => ["completed", "recovery_required"].includes(result.state))).toBe(true);
   });
 
   it("reconciles a successful effect after a crash before durable completion", async () => {
@@ -218,8 +249,51 @@ describe("durable governed execution", () => {
     const [left, right] = await Promise.all([firstRun, secondRun]);
     expect(effect.attempts).toBe(1);
     expect(effect.successes).toBe(1);
-    expect([left.state, right.state]).toEqual(["recovery_required", "recovery_required"]);
+    expect([left.state, right.state].sort()).toEqual(["completed", "recovery_required"]);
     expect((await makeCoordinator(filePath, effect).execute(request())).state).toBe("completed");
+  });
+
+  it("uses one durable dispatch claim for simultaneous fresh coordinators", async () => {
+    const filePath = tempStatePath();
+    const effect = { attempts: 0, successes: 0, completed: new Set<string>(), inFlight: false };
+    let arrivals = 0;
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    const preflightBarrier = {
+      async arrive() {
+        arrivals += 1;
+        if (arrivals === 2) release();
+        await barrier;
+      },
+    };
+    const first = makeCoordinator(filePath, effect, { preflightBarrier });
+    const second = makeCoordinator(filePath, effect, { preflightBarrier });
+    const [left, right] = await Promise.all([first.execute(request()), second.execute(request())]);
+    expect(arrivals).toBe(2);
+    expect(effect.attempts).toBe(1);
+    expect(effect.successes).toBe(1);
+    expect([left.state, right.state].sort()).toEqual(["completed", "recovery_required"]);
+    const persisted = new FileDurableExecutionStateStore({ filePath }).get(left.bindingDigest!);
+    expect(persisted?.dispatchClaim?.ownerId).toMatch(/^pid:\d+:dispatch:/);
+  });
+
+  it.each([
+    ["authenticated principal id", (input: GovernedExecutionRequest) => { input.sessionRequest.execution.authenticatedPrincipal = { id: "different-service", kind: PrincipalKind.Service }; }],
+    ["authenticated principal kind", (input: GovernedExecutionRequest) => { input.sessionRequest.execution.authenticatedPrincipal = { id: "service-durable", kind: PrincipalKind.Human }; }],
+    ["acting principal id", (input: GovernedExecutionRequest) => { input.sessionRequest.execution.actingPrincipal = { id: "different-agent", kind: PrincipalKind.Agent }; }],
+    ["acting principal kind", (input: GovernedExecutionRequest) => { input.sessionRequest.execution.actingPrincipal = { id: "agent-durable", kind: PrincipalKind.Service as never }; }],
+  ] as const)("rejects a changed %s after restart and retrieval", async (_label, mutate) => {
+    const filePath = tempStatePath();
+    const effect = { attempts: 0, successes: 0, completed: new Set<string>(), inFlight: false };
+    const original = request();
+    original.contentAccess = { ...(original.contentAccess as Record<string, unknown>), operationBindingDigest: `sha256:${"a".repeat(64)}` };
+    await makeCoordinator(filePath, effect).execute(original);
+    const changed = request();
+    changed.contentAccess = { ...(original.contentAccess as Record<string, unknown>) };
+    mutate(changed);
+    expect(makeCoordinator(filePath, effect).get(changed)).toBeUndefined();
+    await expect(makeCoordinator(filePath, effect).execute(changed)).rejects.toThrow("IDEMPOTENCY_BINDING_MISMATCH");
+    expect(effect.attempts).toBe(1);
   });
 
   it.each(["", "{\"schemaVersion\":999}", "not-json"])("fails closed on corrupted durable state: %s", async (contents) => {

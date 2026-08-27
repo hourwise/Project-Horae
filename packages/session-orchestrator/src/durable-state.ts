@@ -16,7 +16,7 @@ import type {
   GovernedExecutionState,
 } from "./governed-execution.js";
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const STATES = new Set<GovernedExecutionState>([
   "received",
@@ -59,10 +59,21 @@ export type DurableEffectStatus =
   | "confirmed"
   | "unknown";
 
+export interface DurableDispatchClaim {
+  ownerId: string;
+  generation: number;
+  claimedAt: string;
+}
+
+export type DispatchClaimResult =
+  | { acquired: true; record: GovernedExecutionRecord }
+  | { acquired: false; record: GovernedExecutionRecord };
+
 export interface DurableExecutionStateStore {
   transaction<T>(operation: () => T): T;
   get(bindingDigest: string): GovernedExecutionRecord | undefined;
   getByIdempotencyKey(idempotencyKey: string): { bindingDigest: string; requestId: string } | undefined;
+  claimDispatch(bindingDigest: string, ownerId: string, claimedAt: string): DispatchClaimResult;
   put(bindingDigest: string, record: GovernedExecutionRecord): void;
 }
 
@@ -159,6 +170,30 @@ export class FileDurableExecutionStateStore implements DurableExecutionStateStor
     else this.transaction(put);
   }
 
+  claimDispatch(bindingDigest: string, ownerId: string, claimedAt: string): DispatchClaimResult {
+    assertDigest(bindingDigest, "bindingDigest");
+    if (!ownerId.trim()) throw new DurableExecutionStateError("dispatch ownerId is required");
+    if (!Number.isFinite(Date.parse(claimedAt))) throw new DurableExecutionStateError("dispatch claimedAt must be an ISO timestamp");
+    return this.transaction(() => {
+      const current = this.get(bindingDigest);
+      if (!current) throw new DurableExecutionStateError("cannot claim dispatch for a missing execution record");
+      if (current.dispatchClaim) return { acquired: false, record: current };
+      if (current.state !== "execution_intent_recorded" || current.effectStatus !== "intent_recorded") {
+        return { acquired: false, record: current };
+      }
+      const next = {
+        ...current,
+        dispatchClaim: {
+          ownerId,
+          generation: 1,
+          claimedAt,
+        },
+      };
+      this.put(bindingDigest, next);
+      return { acquired: true, record: next };
+    });
+  }
+
   private readState(): { records: Map<string, GovernedExecutionRecord>; bindings: Map<string, { bindingDigest: string; requestId: string }> } {
     if (!existsSync(this.filePath)) return { records: new Map(), bindings: new Map() };
     let document: unknown;
@@ -226,6 +261,16 @@ function validateRecord(bindingDigest: string, record: unknown): asserts record 
   if (typeof record.effectId !== "string" || record.effectId !== `effect:${bindingDigest}` || !DIGEST_PATTERN.test(record.bindingDigest)) {
     throw new DurableExecutionStateError("durable execution record has no stable effect identity");
   }
+  validatePrincipal(record.authenticatedPrincipal, "authenticatedPrincipal");
+  validatePrincipal(record.actingPrincipal, "actingPrincipal");
+  if (record.dispatchClaim !== undefined) {
+    if (!isObject(record.dispatchClaim) || typeof record.dispatchClaim.ownerId !== "string" || !record.dispatchClaim.ownerId.trim() || !Number.isSafeInteger(record.dispatchClaim.generation) || record.dispatchClaim.generation <= 0 || typeof record.dispatchClaim.claimedAt !== "string" || !Number.isFinite(Date.parse(record.dispatchClaim.claimedAt))) {
+      throw new DurableExecutionStateError("durable execution record has an invalid dispatch claim");
+    }
+    if (!["intent_recorded", "attempted", "confirmed", "unknown"].includes(record.effectStatus as string)) {
+      throw new DurableExecutionStateError("durable execution record has a dispatch claim outside the effect lifecycle");
+    }
+  }
   if (!record.effectStatus || !["not_attempted", "intent_recorded", "attempted", "confirmed", "unknown"].includes(record.effectStatus)) {
     throw new DurableExecutionStateError("durable execution record has an invalid effect status");
   }
@@ -247,6 +292,20 @@ function validateRecord(bindingDigest: string, record: unknown): asserts record 
   }
   if (["execution_intent_recorded", "executing", "effect_attempted"].includes(record.state) && record.effectStatus === "not_attempted") {
     throw new DurableExecutionStateError("execution state crossed the intent boundary without effect state");
+  }
+}
+
+function validatePrincipal(value: unknown, label: string): void {
+  if (!isObject(value) || typeof value.id !== "string" || !value.id.trim() || typeof value.kind !== "string" || !["human", "service", "agent", "runtime"].includes(value.kind)) {
+    throw new DurableExecutionStateError(`durable execution record has an invalid ${label}`);
+  }
+  for (const key of ["issuer", "tenantId"]) {
+    if (value[key] !== undefined && (typeof value[key] !== "string" || !value[key].trim())) {
+      throw new DurableExecutionStateError(`durable execution record has an invalid ${label}.${key}`);
+    }
+  }
+  if (value.attributes !== undefined && (!isObject(value.attributes) || Object.entries(value.attributes).some(([key, entry]) => !key.trim() || typeof entry !== "string"))) {
+    throw new DurableExecutionStateError(`durable execution record has invalid ${label}.attributes`);
   }
 }
 
