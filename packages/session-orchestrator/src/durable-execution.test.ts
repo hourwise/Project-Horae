@@ -53,7 +53,7 @@ function request(content = "durable governed source"): GovernedExecutionRequest 
 function makeCoordinator(
   filePath: string,
   effect: { attempts: number; successes: number; completed: Set<string>; inFlight: boolean; block?: Promise<void> },
-  options: { crash?: (point: GovernedExecutionFaultPoint) => void; effectReconciler?: boolean } = {},
+  options: { crash?: (point: GovernedExecutionFaultPoint) => void; effectReconciler?: boolean; failEffect?: boolean } = {},
 ) {
   return new GovernedExecutionCoordinator({
     orchestrator: {
@@ -76,6 +76,10 @@ function makeCoordinator(
         effect.inFlight = true;
         if (effect.completed.has(effectId)) throw new Error("duplicate controlled effect invocation");
         if (effect.block) await effect.block;
+        if (options.failEffect) {
+          effect.inFlight = false;
+          throw new Error("controlled effect failed before success");
+        }
         effect.completed.add(effectId);
         effect.successes += 1;
         effect.inFlight = false;
@@ -101,6 +105,31 @@ function tempStatePath(): string {
 }
 
 describe("durable governed execution", () => {
+  it.each([
+    ["after_receipt_before_authority", false],
+    ["after_authority_before_admission", false],
+    ["after_admission_before_intent", false],
+    ["after_intent_before_effect", false],
+    ["before_effect_invocation", false],
+    ["after_effect_failure_before_recovery_record", true],
+    ["after_effect_success_before_record", false],
+    ["after_effect_confirmed_before_completed", false],
+    ["after_completion_before_response", false],
+  ] as const)("recovers safely across the crash boundary %s", async (point, failEffect) => {
+    const filePath = tempStatePath();
+    const effect = { attempts: 0, successes: 0, completed: new Set<string>(), inFlight: false };
+    const crash = (observed: GovernedExecutionFaultPoint) => {
+      if (observed === point) throw new GovernedExecutionCrash(observed);
+    };
+
+    await expect(makeCoordinator(filePath, effect, { crash, failEffect }).execute(request())).rejects.toThrow("simulated governed execution crash");
+
+    const recovered = await makeCoordinator(filePath, effect).execute(request());
+    expect(recovered.state).toBe("completed");
+    expect(effect.successes).toBe(1);
+    expect(effect.attempts).toBe(failEffect ? 2 : 1);
+  });
+
   it("reconciles a successful effect after a crash before durable completion", async () => {
     const filePath = tempStatePath();
     const effect = { attempts: 0, successes: 0, completed: new Set<string>(), inFlight: false };

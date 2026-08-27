@@ -154,6 +154,7 @@ export type GovernedExecutionFaultPoint =
   | "after_admission_before_intent"
   | "after_intent_before_effect"
   | "before_effect_invocation"
+  | "after_effect_failure_before_recovery_record"
   | "after_effect_success_before_record"
   | "after_effect_confirmed_before_completed"
   | "after_completion_before_response";
@@ -486,6 +487,7 @@ export class GovernedExecutionCoordinator {
       if (error instanceof GovernedExecutionCrash) throw error;
       if (record.effectStatus === "confirmed") return snapshot(record);
       const unknown = effectBoundaryReached || record.effectStatus === "attempted" || record.effectStatus === "unknown";
+      if (unknown) this.options.faultInjector?.("after_effect_failure_before_recovery_record");
       if (timedOut || controller.signal.aborted || unknown) {
         record = await this.persistFailure(record, binding, {
           state: unknown ? "recovery_required" : timedOut ? "timed_out" : "cancelled",
