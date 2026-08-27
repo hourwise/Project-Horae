@@ -245,7 +245,7 @@ function validateRecord(bindingDigest: string, record: unknown): asserts record 
   if (record.state === "effect_confirmed" || record.state === "completed") {
     if (record.effectStatus !== "confirmed") throw new DurableExecutionStateError("completed execution lacks confirmed effect state");
   }
-  if (["execution_intent_recorded", "executing", "effect_attempted", "recovery_required"].includes(record.state) && record.effectStatus === "not_attempted") {
+  if (["execution_intent_recorded", "executing", "effect_attempted"].includes(record.state) && record.effectStatus === "not_attempted") {
     throw new DurableExecutionStateError("execution state crossed the intent boundary without effect state");
   }
 }
