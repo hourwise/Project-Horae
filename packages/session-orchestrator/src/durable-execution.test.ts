@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -102,6 +103,30 @@ function makeCoordinator(
 
 function tempStatePath(): string {
   return join(mkdtempSync(join(tmpdir(), "horae-005d-durable-")), "execution.json");
+}
+
+function rewriteState(filePath: string, mutate: (document: any) => void): void {
+  const document = JSON.parse(readFileSync(filePath, "utf8"));
+  mutate(document);
+  const unsigned = {
+    schemaVersion: document.schemaVersion,
+    records: document.records,
+    idempotencyBindings: document.idempotencyBindings,
+  };
+  document.checksum = `sha256:${createHash("sha256").update(stableJson(unsigned), "utf8").digest("hex")}`;
+  writeFileSync(filePath, JSON.stringify(document), "utf8");
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 describe("durable governed execution", () => {
@@ -211,6 +236,32 @@ describe("durable governed execution", () => {
     parsed.records[0].record.requestId = "tampered-request";
     writeFileSync(filePath, JSON.stringify(parsed), "utf8");
     await expect(makeCoordinator(filePath, effect).execute(request())).rejects.toThrow("checksum mismatch");
+    expect(effect.attempts).toBe(1);
+  });
+
+  it.each([
+    ["malformed record", (document: any) => { document.records[0].record.state = 42; }],
+    ["impossible lifecycle transition", (document: any) => { document.records[0].record.history.push({ state: "received", occurredAt: "2026-08-27T12:00:00.000Z" }); }],
+    ["operation binding mismatch", (document: any) => { document.records[0].bindingDigest = `sha256:${"a".repeat(64)}`; }],
+    ["effect identity mismatch", (document: any) => { document.records[0].record.effectId = `effect:sha256:${"b".repeat(64)}`; }],
+    ["caller binding mismatch", (document: any) => { document.idempotencyBindings[0].requestId = "different-caller"; }],
+    ["conflicting duplicate record", (document: any) => { document.records.push({ ...document.records[0] }); }],
+  ] as const)("fails closed on persisted %s", async (_label, mutate) => {
+    const filePath = tempStatePath();
+    const effect = { attempts: 0, successes: 0, completed: new Set<string>(), inFlight: false };
+    await makeCoordinator(filePath, effect).execute(request());
+    rewriteState(filePath, mutate);
+    await expect(makeCoordinator(filePath, effect).execute(request())).rejects.toThrow(/durable execution|illegal durable execution/);
+    expect(effect.attempts).toBe(1);
+  });
+
+  it("rejects a changed governed scope after restart instead of inheriting the old record", async () => {
+    const filePath = tempStatePath();
+    const effect = { attempts: 0, successes: 0, completed: new Set<string>(), inFlight: false };
+    await makeCoordinator(filePath, effect).execute(request());
+    const changedScope = request();
+    changedScope.sessionRequest.scope = { ...changedScope.sessionRequest.scope, resourceIds: ["different-source"] };
+    await expect(makeCoordinator(filePath, effect).execute(changedScope)).rejects.toThrow("IDEMPOTENCY_BINDING_MISMATCH");
     expect(effect.attempts).toBe(1);
   });
 });

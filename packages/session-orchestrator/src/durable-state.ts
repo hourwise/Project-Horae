@@ -223,7 +223,7 @@ function validateRecord(bindingDigest: string, record: unknown): asserts record 
   if (!isObject(record) || record.bindingDigest !== bindingDigest || typeof record.requestId !== "string" || typeof record.idempotencyKey !== "string" || typeof record.state !== "string" || !STATES.has(record.state as GovernedExecutionState) || !Array.isArray(record.history)) {
     throw new DurableExecutionStateError("durable execution record is malformed or binding-mismatched");
   }
-  if (typeof record.effectId !== "string" || !DIGEST_PATTERN.test(record.bindingDigest)) {
+  if (typeof record.effectId !== "string" || record.effectId !== `effect:${bindingDigest}` || !DIGEST_PATTERN.test(record.bindingDigest)) {
     throw new DurableExecutionStateError("durable execution record has no stable effect identity");
   }
   if (!record.effectStatus || !["not_attempted", "intent_recorded", "attempted", "confirmed", "unknown"].includes(record.effectStatus)) {
