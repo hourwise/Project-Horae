@@ -2,12 +2,58 @@ import { randomUUID } from "node:crypto";
 import { buildHoraeInspection, negotiateWithHorae } from "@horae/adrasteia-adapter";
 
 export { InMemoryAuditRouter } from "@horae/audit-router";
-export { RuntimeLifecycleError, RuntimeProtocolCompatibilityError, RegistrationAdmissionError, RuntimeRegistry } from "@horae/runtime-registry";
-export type { LifecycleTransitionOptions, PeerRegistrationCandidate, ProtocolNegotiationResult, RuntimeHealthAssessment, StaleHeartbeatOptions } from "@horae/runtime-registry";
+export {
+  RuntimeLifecycleError,
+  RuntimeProtocolCompatibilityError,
+  RegistrationAdmissionError,
+  RuntimeRegistry,
+} from "@horae/runtime-registry";
+export type {
+  LifecycleTransitionOptions,
+  PeerRegistrationCandidate,
+  ProtocolNegotiationResult,
+  RuntimeHealthAssessment,
+  StaleHeartbeatOptions,
+} from "@horae/runtime-registry";
 export { RuntimeDiscoveryCoordinator, RuntimeInspectionError } from "./runtime-discovery.js";
 export type { RuntimeInspectionBinding, RuntimeInspectionTarget } from "./runtime-discovery.js";
-export { CapabilityProviderConflictError, SessionOrchestrator, CompositionValidationError, SessionRequestValidationError, createDevelopmentSessionRequest, validateTrustedSessionRequest, DEFAULT_HORAE_PROTOCOL_VERSION } from "@horae/session-orchestrator";
-export type { CapabilityProviderConflict, SessionOrchestratorOptions } from "@horae/session-orchestrator";
+export {
+  CapabilityProviderConflictError,
+  SessionOrchestrator,
+  CompositionValidationError,
+  SessionRequestValidationError,
+  createDevelopmentSessionRequest,
+  validateTrustedSessionRequest,
+  DEFAULT_HORAE_PROTOCOL_VERSION,
+} from "@horae/session-orchestrator";
+export type {
+  CapabilityProviderConflict,
+  SessionOrchestratorOptions,
+} from "@horae/session-orchestrator";
+export {
+  FileFates007aExecutionStore,
+  Fates007aExecutionCoordinator,
+  Fates007aStoreError,
+  createFates007aClaimVerifier,
+  createFates007aReceipt,
+  computeFates007aAuthorityInstanceDigest,
+  computeFates007aClaimDigest,
+  computeFates007aDurableExecutionId,
+  FATES_007A_AUTHORITY_DOMAIN,
+  FATES_007A_CLAIM_DOMAIN,
+  FATES_007A_DURABLE_ID_DOMAIN,
+  FATES_007A_RECEIPT_DOMAIN,
+  FATES_007A_SCHEMA_VERSION,
+} from "@horae/session-orchestrator";
+export type {
+  Fates007aExecutionRecord,
+  Fates007aExecutionState,
+  FatesAuthorityEnvelopeV1,
+  FatesClaimV1,
+  FatesEffectReceiptV1,
+  FatesClaimAwareAnankeBinding,
+  FatesReceiptResult,
+} from "@horae/session-orchestrator";
 export type {
   AgentExecutionContext,
   Capability,
@@ -42,13 +88,47 @@ export class HoraeRuntime {
     private readonly ready = true,
   ) {}
 
-  runtimeIdentity() { return buildHoraeInspection({ version: this.version, instanceId: this.instanceId, ready: this.ready }).identity; }
-  runtimeHealth() { return buildHoraeInspection({ version: this.version, instanceId: this.instanceId, ready: this.ready }).health; }
-  runtimeReadiness() { return buildHoraeInspection({ version: this.version, instanceId: this.instanceId, ready: this.ready }).readiness; }
-  runtimeRegistration() { return buildHoraeInspection({ version: this.version, instanceId: this.instanceId, ready: this.ready }).registration; }
-  compatibilityManifest() { return buildHoraeInspection({ version: this.version, instanceId: this.instanceId, ready: this.ready }).compatibility; }
+  runtimeIdentity() {
+    return buildHoraeInspection({
+      version: this.version,
+      instanceId: this.instanceId,
+      ready: this.ready,
+    }).identity;
+  }
+  runtimeHealth() {
+    return buildHoraeInspection({
+      version: this.version,
+      instanceId: this.instanceId,
+      ready: this.ready,
+    }).health;
+  }
+  runtimeReadiness() {
+    return buildHoraeInspection({
+      version: this.version,
+      instanceId: this.instanceId,
+      ready: this.ready,
+    }).readiness;
+  }
+  runtimeRegistration() {
+    return buildHoraeInspection({
+      version: this.version,
+      instanceId: this.instanceId,
+      ready: this.ready,
+    }).registration;
+  }
+  compatibilityManifest() {
+    return buildHoraeInspection({
+      version: this.version,
+      instanceId: this.instanceId,
+      ready: this.ready,
+    }).compatibility;
+  }
   inspect() {
-    const snapshot = buildHoraeInspection({ version: this.version, instanceId: this.instanceId, ready: this.ready });
+    const snapshot = buildHoraeInspection({
+      version: this.version,
+      instanceId: this.instanceId,
+      ready: this.ready,
+    });
     return { ...snapshot, constraints: snapshot.compatibility.knownConstraints ?? [] };
   }
   negotiateProtocol(protocolVersion: string, minimumProtocolVersion: string) {
