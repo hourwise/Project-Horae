@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { PrincipalKind, ResourceScopeMode } from "@horae/adrasteia-adapter";
 import {
@@ -172,7 +173,7 @@ describe("durable governed execution", () => {
     const statePath = join(root, "execution.json");
     const callLogPath = join(root, "effect-calls.log");
     const barrierPath = join(root, "barrier");
-    const childScript = join(process.cwd(), "packages/session-orchestrator/src/durable-dispatch-child.mjs");
+    const childScript = fileURLToPath(new URL("./durable-dispatch-child.mjs", import.meta.url));
     const [left, right] = await Promise.all([
       runChild(childScript, [statePath, callLogPath, barrierPath, "a"]),
       runChild(childScript, [statePath, callLogPath, barrierPath, "b"]),
